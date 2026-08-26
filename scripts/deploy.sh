@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Deploy to fddatateam: pull main, rebuild, restart, smoke-test through the
-# tunnel. Run from anywhere with ssh access:  scripts/deploy.sh [host]
+# Deploy: pull main, rebuild, restart, smoke-test through the tunnel.
+#   scripts/deploy.sh [host]     # from a workstation: ssh to <host> (default fddatateam)
+#   scripts/deploy.sh            # on the host itself: runs locally (auto-detected)
 set -euo pipefail
 HOST="${1:-fddatateam}"
 
-ssh -o BatchMode=yes "$HOST" '
+REMOTE_SCRIPT='
   set -euo pipefail
   cd ~/metcalf-think-aloud-facilitator
   git pull -q
@@ -20,5 +21,12 @@ ssh -o BatchMode=yes "$HOST" '
   curl -sf http://127.0.0.1:7900/healthz
   echo
 '
+
+if [ "$(hostname -s)" = "$HOST" ]; then
+  bash -c "$REMOTE_SCRIPT"
+else
+  ssh -o BatchMode=yes "$HOST" "$REMOTE_SCRIPT"
+fi
+
 echo "deployed; verifying through the tunnel…"
 curl -sf --max-time 20 https://metcalf-think-aloud-facilitator.opengamedata.io/healthz && echo
