@@ -72,4 +72,13 @@ Two findings from the same manual pass, via /spike/play visits:
   delivers zero webm chunks. The consent page's Chrome/Edge gate is
   load-bearing for video, not just speech — enforce it, don't just warn.
 
-## S4 · Chromebook — pending (needs hardware; run /spike/speech + /spike/play there)
+## S4 · Chromebook — provisional GO (2026-08-26); low-end device still pending
+
+- Researcher played /spike/play through the production tunnel: "games feels
+  great" on their hardware; a video chunk arrived through the tunnel from
+  the live device (upload path proven outside localhost).
+- Remaining: repeat /spike/speech + /spike/play on a low-end,
+  district-managed Chromebook and pick the degradation ladder if needed.
+- Spike-infrastructure lesson: /spike/status is in-memory and a redeploy
+  mid-test wipes it — real sessions write to disk precisely so this class
+  of loss cannot happen.

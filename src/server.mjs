@@ -1,17 +1,31 @@
-// Minimal M0 server: proves the deploy path (tunnel -> 127.0.0.1:7900) and
-// gives CI something real to test. Routes grow per CONTRACTS.md; this file
-// stays the single entry point.
+// Entry point. Route order: API (campaigns/sessions/admin), then the M1
+// spike routes (kept until S4 closes), then the base pages.
 
 import http from 'node:http';
 import { spikeRoutes } from './spike.mjs';
+import { openDb } from './db.mjs';
+import { createApi } from './api.mjs';
 
 const PORT = Number(process.env.PORT ?? 7900);
 const HOST = process.env.HOST ?? '127.0.0.1';
 
-export function createServer() {
+export function createServer({ dataDir = process.env.DATA_DIR ?? './data',
+  adminPassword = process.env.ADMIN_PASSWORD } = {}) {
+  const db = openDb(dataDir);
+  const api = createApi({ db, dataDir, adminPassword });
+
   return http.createServer(async (req, res) => {
     const u = new URL(req.url, 'http://localhost');
-    if (await spikeRoutes(req, res, u)) return;
+    try {
+      if (await api(req, res, u)) return;
+      if (await spikeRoutes(req, res, u)) return;
+    } catch (e) {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: String(e?.message ?? e) }));
+      }
+      return res.end();
+    }
     if (u.pathname === '/healthz') {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ ok: true, service: 'metcalf-think-aloud-facilitator' }));
@@ -20,7 +34,7 @@ export function createServer() {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       return res.end('<!doctype html><meta charset="utf-8"><title>metcalf</title>' +
         '<body style="font:16px system-ui;padding:3rem"><h1>metcalf-think-aloud-facilitator</h1>' +
-        '<p>M0 scaffold — campaigns land here. <a href="/healthz">healthz</a></p>');
+        '<p>Campaigns land here. <a href="/healthz">healthz</a></p>');
     }
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'not found' }));
