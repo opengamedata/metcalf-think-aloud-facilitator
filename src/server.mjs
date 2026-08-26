@@ -3,13 +3,15 @@
 // stays the single entry point.
 
 import http from 'node:http';
+import { spikeRoutes } from './spike.mjs';
 
 const PORT = Number(process.env.PORT ?? 7900);
 const HOST = process.env.HOST ?? '127.0.0.1';
 
 export function createServer() {
-  return http.createServer((req, res) => {
+  return http.createServer(async (req, res) => {
     const u = new URL(req.url, 'http://localhost');
+    if (await spikeRoutes(req, res, u)) return;
     if (u.pathname === '/healthz') {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ ok: true, service: 'metcalf-think-aloud-facilitator' }));

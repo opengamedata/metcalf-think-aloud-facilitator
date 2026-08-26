@@ -1,0 +1,15 @@
+import { chromium } from 'playwright';
+import { spawn } from 'node:child_process';
+const srv = spawn('node', ['src/server.mjs'], { env: { ...process.env, PORT: '7905' }, stdio: 'ignore' });
+await new Promise(r => setTimeout(r, 700));
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+const fails = [];
+page.on('response', r => { if (r.status() >= 400) fails.push(`${r.status()} ${r.url().slice(0, 100)}`); });
+await page.goto('http://127.0.0.1:7905/spike/play/', { waitUntil: 'domcontentloaded' });
+await page.waitForTimeout(40000);
+const canvases = await page.evaluate(() => [...document.querySelectorAll('canvas')].map(c => c.width + 'x' + c.height));
+await browser.close();
+const status = await (await fetch('http://127.0.0.1:7905/spike/status')).json();
+srv.kill();
+console.log(JSON.stringify({ canvases, counts: status.counts, videoChunks: status.videoChunks, videoKB: Math.round(status.videoBytes/1024), fails: fails.slice(0, 4) }));
