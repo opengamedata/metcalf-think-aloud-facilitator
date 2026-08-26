@@ -1,0 +1,26 @@
+# App binds host loopback :7900; TLS + hostname come from the Cloudflare
+# tunnel. The tunnel service is profile-gated because a standalone tunnel
+# container may already be running on the host — never run two replicas of
+# the same tunnel where only one can reach the origin.
+#
+#   ADMIN_PASSWORD=... docker compose up -d --build app
+#   docker compose --profile tunnel up -d        # only if no external tunnel
+services:
+  app:
+    build: .
+    image: metcalf-think-aloud-facilitator:latest
+    ports:
+      - "127.0.0.1:7900:7900"
+    volumes:
+      - metcalf-data:/data
+    environment:
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+    restart: unless-stopped
+  tunnel:
+    profiles: [tunnel]
+    image: cloudflare/cloudflared:latest
+    network_mode: host          # ingress targets http://127.0.0.1:7900
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN:?set TUNNEL_TOKEN}
+    restart: unless-stopped
+volumes:
+  metcalf-data:

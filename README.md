@@ -16,9 +16,14 @@ sessions export to ai-playtester's `runs/human/` format unchanged.
 
 ## Status
 
-M0 scaffold. See [PLAN.md](PLAN.md) for the architecture and milestones, and
-[CONTRACTS.md](CONTRACTS.md) for the frozen v1 contracts every task brief
-builds against. Work items live in [tasks/](tasks/).
+M0–M7 built and deployed: participant flow (`/c/<slug>` consent →
+`/play/<id>` session → summary), proxied game recording (clicks, input, OGD
+taps, canvas video), admin panel (`/admin`: campaigns, sessions table,
+package.zip), synchronized replay (`/admin/replay/<id>`), and
+`scripts/export-playtester.mjs` for ai-playtester's `runs/human/` format.
+Spike results and open items: [tasks/decisions.md](tasks/decisions.md).
+See [PLAN.md](PLAN.md) for architecture, [CONTRACTS.md](CONTRACTS.md) for
+the frozen contracts. Deploy: `scripts/deploy.sh`.
 
 ## Development
 
