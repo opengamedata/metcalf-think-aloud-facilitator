@@ -41,6 +41,10 @@
   const tap = (how, url, body) => {
     try {
       const s = String(url);
+      // Only cross-origin traffic can be OGD: the app may itself be hosted
+      // on an opengamedata.* domain, so same-origin asset requests (relative
+      // URLs or our own origin) must never match.
+      if (!/^https?:\/\//i.test(s) || s.startsWith(location.origin)) return;
       if (BORING.test(s) || !OGD.test(s)) return;
       const bytes = typeof body === 'string' ? body.length : (body?.byteLength ?? body?.size ?? 0);
       push({ kind: 'ogd', how, url: s.slice(0, 200), bytes, playerCode: codeFrom(body) });

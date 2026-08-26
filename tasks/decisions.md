@@ -51,6 +51,25 @@ OGD findings:
   (146.4 s for a 150 s session) and `-ss` frame extraction produces crisp
   gameplay frames — which also validates the ai-playtester export path.
 
-## S3 · Web Speech — pending (needs a human mic; run through the tunnel)
+## S3 · Web Speech — **GO on desktop Chrome** (2026-08-26, researcher manual test)
 
-## S4 · Chromebook — pending (needs hardware; combine with S3 manual pass)
+- MacBook, outdoors, background noise: 9/9 utterances coherent and
+  timestamped over ~65 s; background noise (roofers) correctly rejected;
+  one macOS mic permission prompt.
+- No punctuation in finals — expected from raw Web Speech; add an optional
+  punctuation/cleanup pass at export time, not live.
+- `onend` auto-restart works; the recognizer reports `aborted` when the
+  page closes, which session teardown should treat as normal.
+- Chromebook confirmation still pending (S4).
+
+Two findings from the same manual pass, via /spike/play visits:
+
+- **Same-origin false positive (fixed):** hosting on `opengamedata.io`
+  made every same-origin asset request match the OGD pattern. The tap now
+  ignores non-absolute URLs and anything on `location.origin` — only
+  cross-origin traffic can be OGD.
+- **Safari half-works, silently:** MediaRecorder claims `recording` but
+  delivers zero webm chunks. The consent page's Chrome/Edge gate is
+  load-bearing for video, not just speech — enforce it, don't just warn.
+
+## S4 · Chromebook — pending (needs hardware; run /spike/speech + /spike/play there)
