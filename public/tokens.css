@@ -1,0 +1,16 @@
+/* Shared token sheet — ported from ai-playtester's cowatch sidebar so the
+   facilitator keeps the same look. All pages style through these tokens. */
+:root {
+  --bg: #10151a;
+  --panel: #161d24;
+  --ink: #e6e9ec;
+  --muted: #93a0ab;
+  --accent: #4fb3c0;      /* teal — interactive, links, live states */
+  --warm: #e8a34a;        /* amber — watcher/researcher voice, alerts */
+  --ok: #6eb891;
+  --err: #e4735c;
+  --rule: #26303a;
+  --field: #0d1216;
+  --font: 14px/1.5 ui-sans-serif, system-ui, sans-serif;
+  --mono: ui-monospace, Menlo, monospace;
+}

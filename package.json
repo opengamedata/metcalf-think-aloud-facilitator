@@ -1,0 +1,12 @@
+{
+  "name": "metcalf-think-aloud-facilitator",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.5" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test"
+  },
+  "devDependencies": {}
+}
