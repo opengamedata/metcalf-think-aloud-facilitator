@@ -1,0 +1,56 @@
+# Spike decisions
+
+## S1 · proxy + injection — **GO** (2026-08-26)
+
+Tested against Wake, astrogame (Project Hercules), and Bloom, driven headless
+by Playwright as the stand-in participant. All three boot and play through
+the proxy; every asset failure observed was reproduced identically against
+upstream (two genuinely missing `.ogg` files), i.e. zero proxy-caused
+breakage.
+
+Implementation facts the M2 proxy must keep:
+
+- Mount the game at the session's root. Its relative asset URLs arrive as
+  absolute paths, so **join request paths under the game's base directory**
+  (`/Build/x` → `<gameBase>/Build/x`), with an origin-root retry on 404 for
+  references that really meant the site root. Getting this wrong serves the
+  host site's fallback page as JavaScript and the game never boots.
+- Strip on the way back: `content-security-policy(-report-only)`,
+  `x-frame-options`, `content-encoding`/`content-length` (fetch already
+  decompressed), hop-by-hop headers.
+- Inject the recorder as the **first script in `<head>`** so the fetch/XHR/
+  beacon patch precedes every game script.
+
+OGD findings:
+
+- Live endpoint: `https://fieldday-web.wcer.wisc.edu/wsgi-bin/opengamedata.wsgi/…`
+  — plain main-frame `fetch`, tapped successfully, **no CORS trouble** from
+  the changed page origin.
+- The match pattern must be host-strict
+  (`opengamedata|ogdlogger|fieldday-web|log\.fielddaylab`) with an asset/
+  analytics blocklist — a naive `/log/` matches "…-logo.png" and Google
+  Analytics.
+- **Player code arrives in the RESPONSE** of `GET …/player/`, not in a
+  request body → the production recorder must also parse OGD responses
+  (clone + JSON) to sniff it.
+- Caveat: headless blind clicks only sometimes reach the screen that starts
+  logging; a human minute through the tunnel is the final confirmation —
+  folded into the S3 manual pass.
+
+## S2 · canvas video — **GO** (2026-08-26)
+
+- `canvas.captureStream(10)` + `MediaRecorder('video/webm')`, 5 s chunks:
+  ~50–100 KB/s at 1280×800 across all three games. Fallback
+  (`getDisplayMedia`) not needed on desktop Chrome.
+- **Select the LARGEST canvas, and only once width ≥ 600** — helper scripts
+  create decoy canvases (Wake: 300×150 from html2canvas) that a naive
+  `querySelector('canvas')` grabs first.
+- Merge = plain byte concat of chunks, **then `ffmpeg -c copy` remux**:
+  streamed webm has no duration/cues, and the replay slider needs both.
+  Verified in the deployed container: remux yields correct duration
+  (146.4 s for a 150 s session) and `-ss` frame extraction produces crisp
+  gameplay frames — which also validates the ai-playtester export path.
+
+## S3 · Web Speech — pending (needs a human mic; run through the tunnel)
+
+## S4 · Chromebook — pending (needs hardware; combine with S3 manual pass)
