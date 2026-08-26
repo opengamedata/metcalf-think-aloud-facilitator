@@ -103,6 +103,7 @@ $('#save').onclick=async()=>{
   const r=await fetch('/api/admin/campaigns',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(c)});
   const out=await r.json();
   if(!r.ok){alert(out.error);return;}
+  c.slug=out.slug??c.slug;               // server normalizes (lowercase etc.)
   fill(c);loadCampaigns();loadSessions(c.slug);
 };
 async function loadSessions(slug){

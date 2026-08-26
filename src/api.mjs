@@ -111,10 +111,15 @@ export function createApi({ db, dataDir, adminPassword }) {
         if (req.method === 'GET') return json(res, 200, db.listCampaigns()), true;
         if (req.method === 'POST') {
           const c = await jsonBody(req);
-          if (!c || !SLUG.test(c.slug ?? '') || !/^https?:\/\//.test(c.gameUrl ?? ''))
-            return json(res, 400, { error: 'slug ([a-z0-9-], 3-40) and http(s) gameUrl required' }), true;
+          if (!c) return json(res, 400, { error: 'body required' }), true;
+          // Normalize instead of nitpicking: lowercase, spaces to dashes.
+          c.slug = String(c.slug ?? '').trim().toLowerCase().replace(/\s+/g, '-');
+          if (!SLUG.test(c.slug))
+            return json(res, 400, { error: `Slug "${c.slug}" is invalid — 3-40 characters, lowercase letters, digits, and dashes only (it becomes the participant URL /c/<slug>).` }), true;
+          if (!/^https?:\/\//.test(c.gameUrl ?? ''))
+            return json(res, 400, { error: 'Game URL must start with http:// or https://' }), true;
           db.putCampaign(c);
-          return json(res, 200, { ok: true, url: `/c/${c.slug}` }), true;
+          return json(res, 200, { ok: true, slug: c.slug, url: `/c/${c.slug}` }), true;
         }
       }
       if (seg[2] === 'campaigns' && SLUG.test(seg[3] ?? '')) {
