@@ -69,8 +69,9 @@ DATA_DIR/sessions/<slug>/<sessionId>/
   transcript.jsonl    {t, text}
   ogd.jsonl           {t, url, bytes, playerCode?}
   checklist.jsonl     {t, item, checked}
-  marks.jsonl         {t, kind:"start"|"begin"|"pause"|"resume"|"end"}
-                      plus {t, kind:"scale", scale} geometry annotations
+  marks.jsonl         {t, kind:"start"|"begin"|"pause"|"resume"|"end"|"video-start"}
+                      plus {t, kind:"scale", scale} geometry annotations;
+                      video-start anchors video time 0 on the session clock
   video/chunk-00001.webm …   → session.webm (merged at end; ffmpeg)
   export/             ai-playtester format, generated on demand
 ```

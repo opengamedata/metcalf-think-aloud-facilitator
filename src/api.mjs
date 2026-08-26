@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createSession, appendEvents, writeChunk, mergeVideo, summarize,
   sessionDir, readLane, LANES } from './store.mjs';
+import { buildZip } from './zip.mjs';
 
 const SLUG = /^[a-z0-9][a-z0-9-]{2,39}$/;
 const SID = /^[a-f0-9]{16}$/;
@@ -134,6 +135,32 @@ export function createApi({ db, dataDir, adminPassword }) {
         }
         if (req.method === 'GET' && seg[4] === 'sessions') {
           return json(res, 200, db.listSessions(slug)), true;
+        }
+        if (req.method === 'GET' && seg[4] === 'package.zip') {
+          const rows = db.listSessions(slug);
+          const cols = ['sessionId', 'playerCode', 'startedAt', 'endedAt', 'durationMs',
+            'utterances', 'clicks', 'ogdLogs', 'status'];
+          const manifest = [cols.join(','), ...rows.map((r) =>
+            cols.map((c) => JSON.stringify(r[c] ?? '')).join(','))].join('\n') + '\n';
+          const entries = [{ name: `${slug}/manifest.csv`, data: Buffer.from(manifest) }];
+          for (const r of rows) {
+            const dir = sessionDir(dataDir, slug, r.sessionId);
+            if (!fs.existsSync(dir)) continue;
+            for (const f of fs.readdirSync(dir)) {
+              const p = path.join(dir, f);
+              if (fs.statSync(p).isFile()) {
+                entries.push({ name: `${slug}/${r.sessionId}/${f}`, data: fs.readFileSync(p) });
+              }
+            }
+          }
+          const zip = buildZip(entries);
+          res.writeHead(200, {
+            'content-type': 'application/zip',
+            'content-length': zip.length,
+            'content-disposition': `attachment; filename="${slug}-package.zip"`,
+          });
+          res.end(zip);
+          return true;
         }
       }
       if (seg[2] === 'sessions' && SID.test(seg[3] ?? '')) {

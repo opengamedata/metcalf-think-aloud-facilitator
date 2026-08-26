@@ -114,6 +114,8 @@
         origFetch(API(`video?seq=${seq++}&t=${at()}`), { method: 'POST', body: e.data }).catch(() => {});
       };
       rec.start(5000);
+      // Replay needs the offset between video time 0 and the session clock.
+      push('marks', { kind: 'video-start', canvas: `${canvas.width}x${canvas.height}` });
     } catch (err) { rec = null; }
   };
   const poll = setInterval(() => { tryCapture(); if (rec) clearInterval(poll); }, 1000);
