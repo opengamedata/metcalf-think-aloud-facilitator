@@ -1,4 +1,4 @@
-// Researcher panel: /admin (login + campaigns + sessions table) and
+// Main application: / and /admin (login + campaigns + sessions table), plus
 // /admin/replay/<sessionId> (video + time slider + synchronized lanes).
 // Single-file pages, cookie auth against the /api/admin routes.
 
@@ -208,7 +208,7 @@ boot();
 export function createAdminUi() {
   return function adminUiRoutes(req, res, u) {
     const html = (page) => { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(page); };
-    if (u.pathname === '/admin') { html(ADMIN_PAGE); return true; }
+    if (u.pathname === '/' || u.pathname === '/admin') { html(ADMIN_PAGE); return true; }
     const m = u.pathname.match(/^\/admin\/replay\/([a-f0-9]{16})$/);
     if (m && SID.test(m[1])) { html(replayPage(m[1])); return true; }
     return false;
