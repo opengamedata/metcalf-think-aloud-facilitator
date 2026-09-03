@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createSession, appendEvents, writeChunk, mergeVideo, summarize,
   sessionDir, readLane, LANES } from './store.mjs';
 import { buildZip } from './zip.mjs';
+import { slugify } from './slugify.mjs';
 
 const SLUG = /^[a-z0-9][a-z0-9-]{2,39}$/;
 const SID = /^[a-f0-9]{16}$/;
@@ -112,10 +113,11 @@ export function createApi({ db, dataDir, adminPassword }) {
         if (req.method === 'POST') {
           const c = await jsonBody(req);
           if (!c) return json(res, 400, { error: 'body required' }), true;
-          // Normalize instead of nitpicking: lowercase, spaces to dashes.
-          c.slug = String(c.slug ?? '').trim().toLowerCase().replace(/\s+/g, '-');
+          // Normalize instead of nitpicking: anything slugify can fix, it fixes.
+          const rawSlug = String(c.slug ?? '');
+          c.slug = slugify(rawSlug);
           if (!SLUG.test(c.slug))
-            return json(res, 400, { error: `Slug "${c.slug}" is invalid — 3-40 characters, lowercase letters, digits, and dashes only (it becomes the participant URL /c/<slug>).` }), true;
+            return json(res, 400, { error: `Slug "${rawSlug}" is invalid — 3-40 characters, lowercase letters, digits, and dashes only (it becomes the participant URL /c/<slug>).` }), true;
           if (!/^https?:\/\//.test(c.gameUrl ?? ''))
             return json(res, 400, { error: 'Game URL must start with http:// or https://' }), true;
           db.putCampaign(c);

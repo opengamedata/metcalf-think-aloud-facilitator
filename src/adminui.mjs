@@ -68,6 +68,13 @@ const $=(s)=>document.querySelector(s);
 const api=(p,opt)=>fetch('/api/admin/'+p,opt).then(r=>{if(r.status===401)throw 401;return r.json()});
 const clock=(ms)=>{if(ms==null)return '—';const s=Math.round(ms/1000);return (s/60|0)+':'+String(s%60).padStart(2,'0')};
 let current=null;
+// mirrors src/slugify.mjs so the preview matches what the server stores
+const slugify=(v)=>String(v==null?'':v).toLowerCase().replace(/[^a-z0-9-]/g,'-').replace(/-+/g,'-').replace(/^-|-$/g,'');
+function previewSlug(){
+  const s=slugify($('#f-slug').value);
+  $('#campUrl').textContent=s.length>=3?location.origin+'/c/'+s:'slug needs at least 3 letters, digits or dashes';
+  return s;
+}
 
 async function boot(){
   try{await api('campaigns');$('#login').style.display='none';$('#app').style.display='block';loadCampaigns();}
@@ -91,12 +98,13 @@ function fill(c){
   for(const k of ['name','slug','gameUrl','instructionsMd','consentMd','thankyouMd'])$('#f-'+k).value=c[k]??'';
   $('#f-checklist').value=(c.checklist??[]).map(t=>t.id+' | '+t.label).join('\\n');
   $('#f-promptCode').checked=!!(c.options&&c.options.promptPlayerCode);
-  $('#campUrl').textContent=c.slug?location.origin+'/c/'+c.slug:'';
+  previewSlug();
 }
+$('#f-slug').addEventListener('input',previewSlug);
 $('#newCamp').onclick=()=>{fill({});$('#sessions').style.display='none';};
 async function edit(slug){fill(await api('campaigns/'+slug));loadSessions(slug);}
 $('#save').onclick=async()=>{
-  const c={slug:$('#f-slug').value.trim(),name:$('#f-name').value.trim(),gameUrl:$('#f-gameUrl').value.trim(),
+  const c={slug:previewSlug(),name:$('#f-name').value.trim(),gameUrl:$('#f-gameUrl').value.trim(),
     instructionsMd:$('#f-instructionsMd').value,consentMd:$('#f-consentMd').value,thankyouMd:$('#f-thankyouMd').value,
     checklist:$('#f-checklist').value.split('\\n').map(l=>l.trim()).filter(Boolean).map(l=>{const [id,...rest]=l.split('|');return {id:id.trim(),label:rest.join('|').trim()||id.trim()}}),
     options:{promptPlayerCode:$('#f-promptCode').checked}};
