@@ -2,6 +2,8 @@
 // /admin/replay/<sessionId> (video + time slider + synchronized lanes).
 // Single-file pages, cookie auth against the /api/admin routes.
 
+import { LANE_CONFIG, laneConfigSource } from './replay-lanes.mjs';
+
 const SID = /^[a-f0-9]{16}$/;
 
 const CSS = `
@@ -123,10 +125,11 @@ async function loadSessions(slug){
 boot();
 </script>`;
 
-const replayPage = (sessionId) => `<!doctype html><meta charset="utf-8"><title>replay ${sessionId.slice(0, 6)}</title>
+export const replayPage = (sessionId) => `<!doctype html><meta charset="utf-8"><title>replay ${sessionId.slice(0, 6)}</title>
 <style>${CSS}
-  body{display:flex;height:100vh;overflow:hidden}
-  #left{flex:0 0 62%;display:flex;flex-direction:column;padding:12px}
+  body{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+  #main{display:flex;flex:1 1 auto;min-height:0}
+  #left{flex:0 0 62%;display:flex;flex-direction:column;padding:12px;min-width:0}
   #stage{position:relative;background:#000;border:1px solid var(--rule)}
   #stage video{display:block;width:100%}
   .mark{position:absolute;width:18px;height:18px;margin:-9px;border:2px solid var(--warm);border-radius:50%;opacity:0;transition:opacity .15s}
@@ -141,19 +144,42 @@ const replayPage = (sessionId) => `<!doctype html><meta charset="utf-8"><title>r
   .ev.now{border-left-color:var(--accent);background:#16232a;color:var(--ink)}
   .ev.click{color:var(--warm)}.ev.ogd .t{color:var(--ok)}
   h2{margin:0;padding:10px 12px 4px}
+  /* horizontal event lanes, pinned full width across the bottom */
+  #strip{flex:0 0 auto;background:#0b1014;border-top:1px solid var(--rule);padding:8px 12px 10px;cursor:crosshair}
+  #lanebody{position:relative}
+  .lane{display:flex;align-items:center;margin:2px 0}
+  .lanelabel{flex:0 0 64px;font:11px/1.4 ui-monospace,Menlo,monospace;color:var(--muted)}
+  .track{position:relative;flex:1 1 auto;height:12px;background:#141b22;border-radius:2px}
+  .m{position:absolute;top:2px;height:8px;background:currentColor}
+  .m.dot{width:8px;margin-left:-4px;border-radius:50%}
+  .m.tick{width:2px;margin-left:-1px}
+  .m.bar{min-width:2px;border-radius:1px;opacity:.8}
+  #ph{position:absolute;top:0;bottom:0;width:1px;background:var(--ink);opacity:.7;pointer-events:none}
 </style>
-<div id="left">
-  <div id="stage"><video id="v"></video></div>
-  <div id="bar"><button id="play">▶</button>
-    <input id="scrub" type="range" min="0" max="1000" value="0">
-    <span class="mono" id="tnow">0:00</span> / <span class="mono" id="ttot">0:00</span></div>
-  <div class="mono" id="meta" style="color:var(--muted)"></div>
+<div id="main">
+  <div id="left">
+    <div id="stage"><video id="v"></video></div>
+    <div id="bar"><button id="play">▶</button>
+      <input id="scrub" type="range" min="0" max="1000" value="0">
+      <span class="mono" id="tnow">0:00</span> / <span class="mono" id="ttot">0:00</span></div>
+    <div class="mono" id="meta" style="color:var(--muted)"></div>
+  </div>
+  <div id="right"><h2>Timeline</h2><div class="pane" id="lanes"></div></div>
 </div>
-<div id="right"><h2>Timeline</h2><div class="pane" id="lanes"></div></div>
+<div id="strip"><div id="lanebody">
+  ${LANE_CONFIG.map((l) => `<div class="lane" data-lane="${l.id}"><span class="lanelabel">${l.label}</span><div class="track" id="track-${l.id}" style="color:${l.color}"></div></div>`).join('\n  ')}
+  <div id="ph" style="left:64px"></div>
+</div></div>
 <script>
 const $=(s)=>document.querySelector(s);
 const SID=${JSON.stringify(sessionId)};
 const clock=(ms)=>{const s=Math.max(0,Math.round(ms/1000));return (s/60|0)+':'+String(s%60).padStart(2,'0')};
+const LABEL_W=64;
+// one entry per lane — adding a lane is one entry, no per-type branching below
+const LANE_CONFIG=${laneConfigSource()};
+const posPct=(t,dur)=>(!Number.isFinite(t)||!Number.isFinite(dur)||dur<=0)?0:Math.min(100,Math.max(0,t/dur*100));
+const laneFor=(e)=>{for(const l of LANE_CONFIG){if(!l.from(e))continue;
+  return (l.needsTime&&!Number.isFinite(e.t))?null:l.id;}return null;};
 let data,offset=0,dur=1,W=1280,H=800,els=[];
 
 async function boot(){
@@ -184,12 +210,44 @@ async function boot(){
     lanes.appendChild(d);
   }
   els=[...document.querySelectorAll('.ev')];
+  buildStrip();
   tick();
 }
+// runs of near-adjacent point events become one bar spanning first..last
+function burst(evs,gap){
+  const out=[];
+  for(const e of evs){
+    const p=out[out.length-1];
+    if(p&&e.t-(p.t+p.ms)<=gap){p.ms=e.t-p.t;continue;}
+    out.push({t:e.t,ms:0});
+  }
+  return out;
+}
+// one innerHTML write per lane, no per-marker layout reads
+function buildStrip(){
+  const bucket=new Map(LANE_CONFIG.map(l=>[l.id,[]]));
+  for(const e of data.events){
+    if(!Number.isFinite(e.t))continue;
+    const id=laneFor(e);
+    if(id)bucket.get(id).push(e);
+  }
+  for(const l of LANE_CONFIG){
+    let evs=bucket.get(l.id).sort((a,b)=>a.t-b.t);
+    if(l.burstGapMs)evs=burst(evs,l.burstGapMs);
+    $('#track-'+l.id).innerHTML=evs.map(e=>{
+      const left=posPct(e.t,dur);
+      if(l.shape!=='bar')return '<i class="m '+l.shape+'" style="left:'+left.toFixed(4)+'%"></i>';
+      const w=Math.min(posPct(Math.max(Number(e[l.durKey])||0,dur/600),dur),100-left);
+      return '<i class="m bar" style="left:'+left.toFixed(4)+'%;width:'+w.toFixed(4)+'%"></i>';
+    }).join('');
+  }
+}
 const now=()=>offset+($('#v').currentTime*1000||0);
+const seek=(t)=>{$('#v').currentTime=Math.max(0,(t-offset)/1000);render(t);};
 function render(t){
   $('#tnow').textContent=clock(t);
   $('#scrub').value=Math.round(t/dur*1000);
+  $('#ph').style.left='calc('+LABEL_W+'px + (100% - '+LABEL_W+'px) * '+(posPct(t,dur)/100).toFixed(5)+')';
   let focus=null;
   for(const el of els){
     const et=Number(el.dataset.t);
@@ -207,8 +265,13 @@ function tick(){render(now());requestAnimationFrame(tick);}
 let scrubbing=false;
 $('#scrub').addEventListener('input',()=>{scrubbing=true;
   const t=Number($('#scrub').value)/1000*dur;
-  $('#v').currentTime=Math.max(0,(t-offset)/1000);});
+  seek(t);});
 $('#scrub').addEventListener('change',()=>{scrubbing=false;});
+$('#strip').addEventListener('click',(ev)=>{
+  const r=$('#lanebody').querySelector('.track').getBoundingClientRect();
+  if(!r.width)return;
+  seek(Math.min(1,Math.max(0,(ev.clientX-r.left)/r.width))*dur);
+});
 $('#play').onclick=()=>{const v=$('#v');if(v.paused){v.play();$('#play').textContent='⏸';}else{v.pause();$('#play').textContent='▶';}};
 boot();
 </script>`;
