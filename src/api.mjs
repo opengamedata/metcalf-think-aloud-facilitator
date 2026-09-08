@@ -12,7 +12,18 @@ import { applyCodeAt, toTimelineEvent } from './code-applications.mjs';
 const SLUG = /^[a-z0-9][a-z0-9-]{2,39}$/;
 const SID = /^[a-f0-9]{16}$/;
 
-export function createApi({ db, dataDir, adminPassword }) {
+// A live session with no ingest for this long is presumed abandoned (tab
+// closed, wifi dropped, Chromebook asleep, class period over).
+export const DEFAULT_IDLE_MS = 30 * 60 * 1000;
+// How often the background sweep runs. 0 disables it entirely.
+export const DEFAULT_REAP_INTERVAL_MS = 60 * 1000;
+
+const num = (v, dflt) => (v === undefined || v === '' || Number.isNaN(Number(v)) ? dflt : Number(v));
+
+export function createApi({ db, dataDir, adminPassword,
+  now = () => Date.now(),
+  idleMs = num(process.env.SESSION_IDLE_MS, DEFAULT_IDLE_MS),
+  reapIntervalMs = num(process.env.SESSION_REAP_INTERVAL_MS, DEFAULT_REAP_INTERVAL_MS) } = {}) {
   const cookieToken = adminPassword
     ? crypto.createHmac('sha256', adminPassword).update('metcalf-admin').digest('hex')
     : null;
@@ -36,7 +47,87 @@ export function createApi({ db, dataDir, adminPassword }) {
   });
   const jsonBody = async (req) => { try { return JSON.parse((await body(req)).toString('utf8')); } catch { return null; } };
 
-  return async function apiRoutes(req, res, u) {
+  const nowIso = () => new Date(now()).toISOString();
+
+  // ---- session lifecycle ---------------------------------------------------
+  // ONE code path closes a session: the participant's [End session], the idle
+  // reaper and the researcher's force-end all land here. `status` is 'ended'
+  // (clean finish) or 'abandoned' (never closed itself); `closedReason` records
+  // which of the three did it. Idempotent: a second call is a no-op because
+  // db.closeSession only updates rows still in 'live'.
+  const closeSession = (sessionId, { status = 'ended', closedReason = 'participant' } = {}) => {
+    const row = db.getSession(sessionId);
+    if (!row) return null;
+    if (row.status !== 'live') return row;
+    const dir = sessionDir(dataDir, row.slug, row.sessionId);
+    const sum = summarize(dir);
+    // summarize() is the authority on duration: max event t across all lanes,
+    // on the participant clock (CONTRACTS §1). A session with no events at all
+    // still has its t=0 'start' mark, so this is 0 — never null and never NaN.
+    const durationMs = Number.isFinite(sum.durationMs) ? sum.durationMs : 0;
+    const at = nowIso();
+    appendEvents(dir, [{ lane: 'marks', t: durationMs, kind: 'end', reason: closedReason }]);
+    mergeVideo(dir);
+    db.closeSession(row.sessionId, {
+      ...sum, durationMs, endedAt: at, closedAt: at, status, closedReason,
+      playerCode: sum.playerCode ?? row.playerCode,
+    });
+    try {
+      const p = path.join(dir, 'session.json');
+      const meta = JSON.parse(fs.readFileSync(p, 'utf8'));
+      fs.writeFileSync(p, JSON.stringify({
+        ...meta, endedAt: at, status, closedReason,
+        playerCode: sum.playerCode ?? meta.playerCode,
+        counts: { utterances: sum.utterances, clicks: sum.clicks, ogdLogs: sum.ogdLogs },
+      }, null, 2));
+    } catch { /* jsonl on disk is the record; the meta rewrite is best-effort */ }
+    return db.getSession(row.sessionId);
+  };
+
+  // Deterministic, clock-injected sweep. Never sleeps, never spawns anything.
+  const reap = (slug = null) => {
+    const cutoff = new Date(now() - idleMs).toISOString();
+    const stale = db.listStaleSessions(cutoff, slug);
+    const reaped = [];
+    for (const row of stale) {
+      closeSession(row.sessionId, { status: 'abandoned', closedReason: 'idle-timeout' });
+      reaped.push(row.sessionId);
+    }
+    return { reaped, cutoff, idleMs };
+  };
+
+  // Interval sweep for the no-scheduler case. unref'd so it never holds a test
+  // process open, and disabled outright with reapIntervalMs = 0.
+  let timer = null;
+  if (reapIntervalMs > 0) {
+    timer = setInterval(() => { try { reap(); } catch { /* best effort */ } }, reapIntervalMs);
+    timer.unref?.();
+  }
+
+  // Row shape a UI consumes: SQLite ints become booleans, tags become an array,
+  // and a still-live row gets a usable duration so the replay scrub bar has a
+  // length instead of rendering 0:00.
+  const view = (row) => {
+    if (!row) return row;
+    let durationMs = row.durationMs;
+    if (durationMs === null || durationMs === undefined) {
+      try { durationMs = summarize(sessionDir(dataDir, row.slug, row.sessionId)).durationMs; }
+      catch { durationMs = 0; }
+      if (!Number.isFinite(durationMs)) durationMs = 0;
+    }
+    let tags = [];
+    try { tags = row.tags ? JSON.parse(row.tags) : []; } catch { tags = []; }
+    return {
+      ...row, durationMs, tags,
+      excluded: !!row.excluded,
+      pilot: !!row.pilot,
+      note: row.note ?? null,
+      exclusionReason: row.exclusionReason ?? null,
+      closedReason: row.closedReason ?? null,
+    };
+  };
+
+  const apiRoutes = async function apiRoutes(req, res, u) {
     const seg = u.pathname.split('/').filter(Boolean);
 
     // ---- participant ------------------------------------------------------
@@ -46,7 +137,7 @@ export function createApi({ db, dataDir, adminPassword }) {
       const campaign = SLUG.test(b.slug ?? '') ? db.getCampaign(b.slug) : null;
       if (!campaign) return json(res, 404, { error: 'unknown campaign' }), true;
       const sessionId = crypto.randomBytes(8).toString('hex');
-      const startedAt = new Date().toISOString();
+      const startedAt = nowIso();
       createSession(dataDir, campaign.slug, sessionId, {
         sessionId, campaign: campaign.slug, url: campaign.gameUrl,
         game: campaign.game ?? { w: 1280, h: 800 },
@@ -66,31 +157,23 @@ export function createApi({ db, dataDir, adminPassword }) {
       if (req.method === 'POST' && seg[3] === 'events') {
         const b = await jsonBody(req);
         if (!b || !Array.isArray(b.events)) return json(res, 400, { error: 'events array required' }), true;
-        return json(res, 200, { accepted: appendEvents(dir, b.events) }), true;
+        const accepted = appendEvents(dir, b.events);
+        if (accepted) db.touchSession(row.sessionId, nowIso());   // heartbeat for the reaper
+        return json(res, 200, { accepted }), true;
       }
       if (req.method === 'POST' && seg[3] === 'video') {
         if (row.status !== 'live') return json(res, 409, { error: 'session ended' }), true;
         const buf = await body(req, 64 << 20);
         writeChunk(dir, Number(u.searchParams.get('seq') ?? 0), buf);
+        db.touchSession(row.sessionId, nowIso());
         return json(res, 200, { ok: true }), true;
       }
       if (req.method === 'POST' && seg[3] === 'end') {
-        if (row.status === 'live') {
-          const sum = summarize(dir);
-          appendEvents(dir, [{ lane: 'marks', t: sum.durationMs, kind: 'end' }]);
-          mergeVideo(dir);
-          const endedAt = new Date().toISOString();
-          db.endSession(row.sessionId, { endedAt, ...sum, playerCode: sum.playerCode ?? row.playerCode });
-          const meta = JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8'));
-          fs.writeFileSync(path.join(dir, 'session.json'), JSON.stringify({
-            ...meta, endedAt, playerCode: sum.playerCode ?? meta.playerCode,
-            counts: { utterances: sum.utterances, clicks: sum.clicks, ogdLogs: sum.ogdLogs },
-          }, null, 2));
-        }
-        const fresh = db.getSession(row.sessionId);
+        const fresh = closeSession(row.sessionId, { status: 'ended', closedReason: 'participant' });
         return json(res, 200, {
           durationMs: fresh.durationMs, utterances: fresh.utterances,
           clicks: fresh.clicks, ogdLogs: fresh.ogdLogs,
+          status: fresh.status, closedReason: fresh.closedReason,
         }), true;
       }
       return json(res, 404, { error: 'not found' }), true;
@@ -142,18 +225,22 @@ export function createApi({ db, dataDir, adminPassword }) {
           return json(res, 200, { ok: true }), true;
         }
         if (req.method === 'GET' && seg[4] === 'sessions') {
-          return json(res, 200, db.listSessions(slug)), true;
+          reap(slug);                       // lazy sweep on read
+          return json(res, 200, db.listSessions(slug).map(view)), true;
         }
         // The campaign's codebook, for the code picker on the replay timeline.
         if (req.method === 'GET' && seg[4] === 'codebook') {
           return json(res, 200, db.listCodebook(slug)), true;
         }
         if (req.method === 'GET' && seg[4] === 'package.zip') {
-          const rows = db.listSessions(slug);
+          reap(slug);
+          const rows = db.listSessions(slug).map(view);
           const cols = ['sessionId', 'playerCode', 'startedAt', 'endedAt', 'durationMs',
-            'utterances', 'clicks', 'ogdLogs', 'status'];
+            'utterances', 'clicks', 'ogdLogs', 'status', 'closedReason',
+            'excluded', 'exclusionReason', 'pilot', 'note', 'tags'];
           const manifest = [cols.join(','), ...rows.map((r) =>
-            cols.map((c) => JSON.stringify(r[c] ?? '')).join(','))].join('\n') + '\n';
+            cols.map((c) => JSON.stringify(
+              Array.isArray(r[c]) ? r[c].join('|') : (r[c] ?? ''))).join(','))].join('\n') + '\n';
           const entries = [{ name: `${slug}/manifest.csv`, data: Buffer.from(manifest) }];
           for (const r of rows) {
             const dir = sessionDir(dataDir, slug, r.sessionId);
@@ -175,10 +262,50 @@ export function createApi({ db, dataDir, adminPassword }) {
           return true;
         }
       }
+      // Sweep every live session that has gone idle, on demand.
+      if (req.method === 'POST' && seg[2] === 'sessions' && seg[3] === 'reap' && !seg[4]) {
+        return json(res, 200, reap()), true;
+      }
       if (seg[2] === 'sessions' && SID.test(seg[3] ?? '')) {
         const row = db.getSession(seg[3]);
         if (!row) return json(res, 404, { error: 'not found' }), true;
         const dir = sessionDir(dataDir, row.slug, row.sessionId);
+
+        if (req.method === 'GET' && !seg[4]) return json(res, 200, view(row)), true;
+
+        // Teacher's "reset the lab for the next class". Same close path as the
+        // reaper; safe to call twice.
+        if (req.method === 'POST' && seg[4] === 'force-end') {
+          const b = await jsonBody(req);
+          const wasLive = row.status === 'live';
+          const fresh = closeSession(row.sessionId, {
+            status: b?.status === 'ended' ? 'ended' : 'abandoned',
+            closedReason: 'force',
+          });
+          return json(res, 200, { ok: true, alreadyClosed: !wasLive, session: view(fresh) }), true;
+        }
+
+        // Researcher judgement. Never destructive — the jsonl on disk is
+        // untouched; excluding is not deleting.
+        if ((req.method === 'POST' || req.method === 'PUT') && seg[4] === 'flags') {
+          const b = await jsonBody(req);
+          if (!b || typeof b !== 'object') return json(res, 400, { error: 'body required' }), true;
+          const f = {};
+          if ('excluded' in b) f.excluded = !!b.excluded;
+          if ('exclusionReason' in b) f.exclusionReason = b.exclusionReason == null ? null : String(b.exclusionReason);
+          if ('pilot' in b) f.pilot = !!b.pilot;
+          if ('note' in b) f.note = b.note == null ? null : String(b.note);
+          if ('tags' in b) {
+            if (b.tags == null) f.tags = [];
+            else if (Array.isArray(b.tags)) f.tags = b.tags.map(String).filter(Boolean);
+            else return json(res, 400, { error: 'tags must be an array of strings' }), true;
+          }
+          if (!Object.keys(f).length)
+            return json(res, 400, { error: 'no known flag fields; expected excluded, exclusionReason, pilot, note, tags' }), true;
+          db.setSessionFlags(row.sessionId, f, nowIso(), 'admin');
+          return json(res, 200, { ok: true, session: view(db.getSession(row.sessionId)) }), true;
+        }
+
         if (req.method === 'GET' && seg[4] === 'timeline') {
           // Recorded events and researcher-applied codes merge into one
           // t-sorted list, so the codes lane needs no separate client path.
@@ -188,7 +315,7 @@ export function createApi({ db, dataDir, adminPassword }) {
           ].sort((a, b) => (a.t ?? 0) - (b.t ?? 0));
           const hasVideo = fs.existsSync(path.join(dir, 'session.webm'));
           return json(res, 200, {
-            session: row, events,
+            session: view(row), events,
             video: hasVideo ? `/api/admin/sessions/${row.sessionId}/video` : null,
           }), true;
         }
@@ -224,4 +351,11 @@ export function createApi({ db, dataDir, adminPassword }) {
 
     return false;
   };
+
+  // Exposed for tests and for any future caller that needs the lifecycle
+  // without going through HTTP.
+  apiRoutes.reap = reap;
+  apiRoutes.closeSession = closeSession;
+  apiRoutes.stopReaper = () => { if (timer) clearInterval(timer); timer = null; };
+  return apiRoutes;
 }
