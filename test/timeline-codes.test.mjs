@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { openDb } from '../src/db.mjs';
+import { applyCode } from '../src/codebook.mjs';
 import { createServer } from '../src/server.mjs';
 import { replayPage } from '../src/adminui.mjs';
 import { laneFor, LANE_CONFIG } from '../src/replay-lanes.mjs';
@@ -26,7 +28,7 @@ const withApp = async (fn) => {
   };
   const stop = () => new Promise((r) => server.close(r));
   try {
-    await fn({ base: await start(), restart: async () => { await stop(); return start(); } });
+    await fn({ dataDir, base: await start(), restart: async () => { await stop(); return start(); } });
   } finally { await stop(); fs.rmSync(dataDir, { recursive: true, force: true }); }
 };
 
@@ -179,3 +181,99 @@ test('the codes routes need admin auth and a real session', () => withApp(async 
   assert.equal(status, 404);
   assert.deepEqual((await get(base, `/api/admin/sessions/${sid}/codes`))[1], []);
 }));
+
+const bookPath = '/api/admin/campaigns/wake-test/codebook';
+const changeCode = (base, code, fields, method = 'PATCH') => fetch(
+  base + bookPath + '/' + encodeURIComponent(code),
+  { method, headers: admin, body: method === 'DELETE' ? undefined : JSON.stringify(fields) }
+).then(async (r) => [r.status, await r.json()]);
+
+test('codebook field edits persist across restart and partial edits preserve other fields', () =>
+  withApp(async ({ base, restart }) => {
+    const sid = await seed(base);
+    await post(base, `/api/admin/sessions/${sid}/codes`, { code: 'why / what? #困惑', tStart: 20 });
+    const fields = { description: 'Cannot find the goal', positive_example: '<wait> "what?"', negative_example: 'I know what to do' };
+    assert.equal((await changeCode(base, 'why / what? #困惑', fields))[0], 200);
+    assert.equal((await changeCode(base, 'why / what? #困惑', { description: 'Changed' }))[0], 200);
+    const [, book] = await get(await restart(), bookPath);
+    assert.equal(book[0].description, 'Changed');
+    assert.equal(book[0].positive_example, fields.positive_example);
+    assert.equal(book[0].negative_example, fields.negative_example);
+  }));
+
+test('codebook rename updates all existing timelines, retains identities and reuses the new label', () =>
+  withApp(async ({ base, restart }) => {
+    const sid = await seed(base);
+    const [, { sessionId: second }] = await post(base, '/api/session/start', { slug: campaign.slug, consent: true });
+    for (const id of [sid, second])
+      await post(base, `/api/admin/sessions/${id}/codes`, { code: 'confusion', tStart: 20, tEnd: 80 });
+    const [, before] = await get(base, `/api/admin/sessions/${sid}/codes`);
+    assert.equal((await changeCode(base, 'confusion', { code: '  New / Label?  ' }))[0], 200);
+    base = await restart();
+    for (const id of [sid, second]) {
+      const [, timeline] = await get(base, `/api/admin/sessions/${id}/timeline`);
+      const code = timeline.events.find(e => e.lane === 'codes');
+      assert.equal(code.code, 'New / Label?');
+      assert.equal(code.codeKey, 'new / label?');
+      assert.equal(code.t, 20);
+      assert.equal(code.ms, 60);
+      if (id === sid) assert.equal(code.id, before[0].id);
+    }
+    const [, reused] = await post(base, `/api/admin/sessions/${sid}/codes`, { code: 'NEW / LABEL?', tStart: 30 });
+    assert.equal(reused.created, false);
+    assert.equal((await get(base, bookPath))[1][0].usageCount, 3);
+    assert.equal((await changeCode(base, 'new / label?', { code: 'NEW / LABEL?' }))[0], 200);
+    assert.equal((await get(base, `/api/admin/sessions/${sid}/codes`))[1][0].code, 'NEW / LABEL?');
+  }));
+
+test('codebook usage counts include zero and deletion blocks used codes but removes unused ones', () =>
+  withApp(async ({ base, restart, dataDir }) => {
+    const sid = await seed(base);
+    await post(base, `/api/admin/sessions/${sid}/codes`, { code: 'used', tStart: 20 });
+    const db = openDb(dataDir);
+    applyCode(db, campaign.slug, 'unused');
+    db.raw.close();
+    const [, book] = await get(base, bookPath);
+    assert.deepEqual(book.map(e => [e.code, e.usageCount]), [['unused', 0], ['used', 1]]);
+    const [status, out] = await changeCode(base, 'used', null, 'DELETE');
+    assert.equal(status, 409);
+    assert.match(out.error, /applied/i);
+    assert.equal((await changeCode(base, 'unused', null, 'DELETE'))[0], 200);
+    base = await restart();
+    assert.deepEqual((await get(base, bookPath))[1].map(e => e.code), ['used']);
+    assert.equal((await get(base, `/api/admin/sessions/${sid}/codes`))[1].length, 1);
+  }));
+
+test('codebook mutations validate labels and fields, reject collisions, and stay campaign scoped', () =>
+  withApp(async ({ base, dataDir }) => {
+    const sid = await seed(base);
+    for (const code of ['one', 'two']) await post(base, `/api/admin/sessions/${sid}/codes`, { code, tStart: 20 });
+    await post(base, '/api/admin/campaigns', { ...campaign, slug: 'other-study' });
+    const db = openDb(dataDir);
+    applyCode(db, 'other-study', 'one');
+    db.raw.close();
+    for (const fields of [{ code: ' ' }, { code: 3 }, { description: null }, { positive_example: [] }, { negative_example: 1 }, null])
+      assert.equal((await changeCode(base, 'one', fields))[0], 400);
+    assert.equal((await changeCode(base, 'one', { code: ' TWO ', description: 'must not save' }))[0], 409);
+    assert.equal((await get(base, bookPath))[1][0].description, '');
+    assert.equal((await changeCode(base, 'missing', { code: 'x' }))[0], 404);
+    assert.equal((await changeCode(base, 'one', { code: 'renamed' }))[0], 200);
+    assert.equal((await get(base, '/api/admin/campaigns/other-study/codebook'))[1][0].code, 'one');
+    for (const method of ['PATCH', 'DELETE']) {
+      assert.equal((await fetch(base + bookPath + '/two', { method, body: '{}' })).status, 401);
+      assert.equal((await fetch(base + '/api/admin/campaigns/missing/codebook/two', { method, headers: admin, body: '{}' })).status, 404);
+    }
+  }));
+
+test('campaign admin provides an inline codebook table with usage and save feedback', () =>
+  withApp(async ({ base }) => {
+    const page = await (await fetch(base + '/admin')).text();
+    assert.match(page, /id="codebook"/);
+    for (const label of ['Code', 'Description', 'Positive example', 'Negative example', 'Usage'])
+      assert.ok(page.includes('<th>' + label + '</th>'));
+    assert.match(page, /loadCampaignCodebook\(slug\)/);
+    assert.match(page, /encodeURIComponent\(entry.codeKey\)/);
+    assert.match(page, /0 · unused/);
+    assert.match(page, /role="status"/);
+    assert.match(page, /method:'PATCH'/);
+  }));
