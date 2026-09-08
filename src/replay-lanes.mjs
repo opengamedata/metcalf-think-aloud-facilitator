@@ -10,6 +10,8 @@
 //   durKey      field carrying the marker's duration in ms (bars only)
 //   burstGapMs  coalesce runs of events closer than this into one bar
 //   needsTime   drop the event unless it carries a usable numeric t
+//   shapeFor    per-event shape override, when one lane holds both kinds
+//   titleFor    per-event hover text
 
 export const LANE_CONFIG = [
   { id: 'clicks', label: 'clicks', shape: 'dot', color: '#e8a34a', from: (e) => e.lane === 'clicks' },
@@ -17,6 +19,11 @@ export const LANE_CONFIG = [
   { id: 'wheel', label: 'wheel', shape: 'bar', color: '#9a86e6', durKey: 'ms', burstGapMs: 400, from: (e) => e.lane === 'input' && e.kind === 'wheel' },
   { id: 'dwell', label: 'dwell', shape: 'bar', color: '#93a0ab', durKey: 'ms', from: (e) => e.lane === 'input' && e.kind === 'dwell' },
   { id: 'ogd', label: 'ogd', shape: 'dot', color: '#6eb891', needsTime: true, from: (e) => e.lane === 'ogd' },
+  // Researcher-applied codes: one lane holding both point and region
+  // applications, so a code reads at a glance as an instant or a span.
+  { id: 'codes', label: 'codes', shape: 'bar', color: '#e07a9f', durKey: 'ms', needsTime: true,
+    shapeFor: (e) => (Number(e.ms) > 0 ? 'bar' : 'dot'), titleFor: (e) => e.code,
+    from: (e) => e.lane === 'codes' },
 ];
 
 // Which lane an event belongs to, or null when it is not shown in the strip

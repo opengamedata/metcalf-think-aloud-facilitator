@@ -143,6 +143,7 @@ export const replayPage = (sessionId) => `<!doctype html><meta charset="utf-8"><
   .ev.past{color:var(--ink)}
   .ev.now{border-left-color:var(--accent);background:#16232a;color:var(--ink)}
   .ev.click{color:var(--warm)}.ev.ogd .t{color:var(--ok)}
+  .ev.codes{color:#e07a9f}
   h2{margin:0;padding:10px 12px 4px}
   /* horizontal event lanes, pinned full width across the bottom */
   #strip{flex:0 0 auto;background:#0b1014;border-top:1px solid var(--rule);padding:8px 12px 10px;cursor:crosshair}
@@ -155,6 +156,11 @@ export const replayPage = (sessionId) => `<!doctype html><meta charset="utf-8"><
   .m.tick{width:2px;margin-left:-1px}
   .m.bar{min-width:2px;border-radius:1px;opacity:.8}
   #ph{position:absolute;top:0;bottom:0;width:1px;background:var(--ink);opacity:.7;pointer-events:none}
+  /* code applicator — lives in the strip, but is not a scrub target */
+  #codebar{display:flex;gap:8px;align-items:center;padding:0 0 8px;cursor:auto}
+  #codebar input{flex:0 1 20rem;padding:.3rem .5rem}
+  #codebar button{padding:.3rem .7rem;font-size:12px}
+  #codemsg{color:var(--muted)}
 </style>
 <div id="main">
   <div id="left">
@@ -166,7 +172,16 @@ export const replayPage = (sessionId) => `<!doctype html><meta charset="utf-8"><
   </div>
   <div id="right"><h2>Timeline</h2><div class="pane" id="lanes"></div></div>
 </div>
-<div id="strip"><div id="lanebody">
+<div id="strip">
+<div id="codebar">
+  <input id="codeinput" list="codelist" autocomplete="off"
+         placeholder="code — pick one from this campaign, or type a new one">
+  <datalist id="codelist"></datalist>
+  <button class="ghost" id="codepoint">+ point</button>
+  <button class="ghost" id="coderegion">+ region</button>
+  <span class="mono" id="codemsg"></span>
+</div>
+<div id="lanebody">
   ${LANE_CONFIG.map((l) => `<div class="lane" data-lane="${l.id}"><span class="lanelabel">${l.label}</span><div class="track" id="track-${l.id}" style="color:${l.color}"></div></div>`).join('\n  ')}
   <div id="ph" style="left:64px"></div>
 </div></div>
@@ -174,6 +189,7 @@ export const replayPage = (sessionId) => `<!doctype html><meta charset="utf-8"><
 const $=(s)=>document.querySelector(s);
 const SID=${JSON.stringify(sessionId)};
 const clock=(ms)=>{const s=Math.max(0,Math.round(ms/1000));return (s/60|0)+':'+String(s%60).padStart(2,'0')};
+const esc=(v)=>String(v).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const LABEL_W=64;
 // one entry per lane — adding a lane is one entry, no per-type branching below
 const LANE_CONFIG=${laneConfigSource()};
@@ -192,7 +208,20 @@ async function boot(){
   $('#meta').textContent=SID+' · '+(data.session.playerCode??'no player code')+' · '+data.session.startedAt;
   $('#ttot').textContent=clock(dur);
   if(data.video)$('#v').src=data.video;
+  for(const e of data.events){
+    if(e.lane!=='clicks')continue;                         // video click overlay
+    const m=document.createElement('div');m.className='mark';
+    m.style.left=(e.x/W*100)+'%';m.style.top=(e.y/H*100)+'%';m.dataset.t=e.t;$('#stage').appendChild(m);
+  }
+  buildList();
+  buildStrip();
+  loadCodebook();
+  tick();
+}
+// the right-hand event list, rebuilt from data.events whenever it changes
+function buildList(){
   const lanes=$('#lanes');
+  lanes.innerHTML='';
   for(const e of data.events){
     if(e.lane==='input'&&e.kind==='move')continue;         // too dense to list
     const d=document.createElement('div');
@@ -202,16 +231,13 @@ async function boot(){
       :e.lane==='clicks'?'click #'+e.n+' ('+e.x+','+e.y+')'
       :e.lane==='ogd'?'OGD '+(e.how??'')+' '+(e.playerCode?'code='+e.playerCode:(e.bytes+'B'))
       :e.lane==='checklist'?'☑ '+e.item+(e.checked?'':' (unchecked)')
+      :e.lane==='codes'?'⚑ '+e.code+(e.tEnd==null?'':' → '+clock(e.tEnd))
       :e.lane==='marks'?'— '+e.kind+(e.scale?' '+e.scale:'')+' —'
       :e.kind??'';
-    d.innerHTML='<span class="t">'+clock(e.t)+'</span>'+String(what).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-    if(e.lane==='clicks'){const m=document.createElement('div');m.className='mark';
-      m.style.left=(e.x/W*100)+'%';m.style.top=(e.y/H*100)+'%';m.dataset.t=e.t;$('#stage').appendChild(m);}
+    d.innerHTML='<span class="t">'+clock(e.t)+'</span>'+esc(what);
     lanes.appendChild(d);
   }
   els=[...document.querySelectorAll('.ev')];
-  buildStrip();
-  tick();
 }
 // runs of near-adjacent point events become one bar spanning first..last
 function burst(evs,gap){
@@ -236,9 +262,11 @@ function buildStrip(){
     if(l.burstGapMs)evs=burst(evs,l.burstGapMs);
     $('#track-'+l.id).innerHTML=evs.map(e=>{
       const left=posPct(e.t,dur);
-      if(l.shape!=='bar')return '<i class="m '+l.shape+'" style="left:'+left.toFixed(4)+'%"></i>';
+      const shape=l.shapeFor?l.shapeFor(e):l.shape;
+      const title=l.titleFor?' title="'+esc(l.titleFor(e))+'"':'';
+      if(shape!=='bar')return '<i class="m '+shape+'"'+title+' style="left:'+left.toFixed(4)+'%"></i>';
       const w=Math.min(posPct(Math.max(Number(e[l.durKey])||0,dur/600),dur),100-left);
-      return '<i class="m bar" style="left:'+left.toFixed(4)+'%;width:'+w.toFixed(4)+'%"></i>';
+      return '<i class="m bar"'+title+' style="left:'+left.toFixed(4)+'%;width:'+w.toFixed(4)+'%"></i>';
     }).join('');
   }
 }
@@ -268,10 +296,48 @@ $('#scrub').addEventListener('input',()=>{scrubbing=true;
   seek(t);});
 $('#scrub').addEventListener('change',()=>{scrubbing=false;});
 $('#strip').addEventListener('click',(ev)=>{
+  if(ev.target.closest('#codebar'))return;                 // controls, not a scrub
   const r=$('#lanebody').querySelector('.track').getBoundingClientRect();
   if(!r.width)return;
   seek(Math.min(1,Math.max(0,(ev.clientX-r.left)/r.width))*dur);
 });
+// --- applying codes -------------------------------------------------------
+// The picker is a plain input backed by a datalist of the campaign's codebook:
+// choosing an existing code and typing a brand-new one are literally the same
+// gesture, which is what the codebook's reuse-on-first-use rule asks for.
+let regionStart=null;
+async function loadCodebook(){
+  const r=await fetch('/api/admin/campaigns/'+data.session.slug+'/codebook');
+  if(!r.ok)return;
+  $('#codelist').innerHTML=(await r.json()).map(e=>'<option value="'+esc(e.code)+'"></option>').join('');
+}
+async function postCode(tStart,tEnd){
+  const code=$('#codeinput').value;
+  const r=await fetch('/api/admin/sessions/'+SID+'/codes',{method:'POST',
+    headers:{'content-type':'application/json'},body:JSON.stringify({code,tStart,tEnd})});
+  const out=await r.json();
+  if(!r.ok){$('#codemsg').textContent=out.error;return;}
+  const c=out.application;
+  data.events.push({...c,lane:'codes',t:c.tStart,ms:c.tEnd==null?0:c.tEnd-c.tStart});
+  data.events.sort((a,b)=>(a.t??0)-(b.t??0));
+  buildList();buildStrip();
+  if(out.created)loadCodebook();                           // new code joined the codebook
+  $('#codemsg').textContent=(out.created?'new code · ':'')+c.code+' @ '+clock(c.tStart)
+    +(c.tEnd==null?'':'–'+clock(c.tEnd));
+}
+$('#codepoint').onclick=()=>postCode(Math.round(now()),null);
+$('#coderegion').onclick=()=>{
+  if(regionStart===null){
+    regionStart=Math.round(now());
+    $('#coderegion').textContent='end region';
+    $('#codemsg').textContent='region open at '+clock(regionStart)+' — scrub, then end it';
+    return;
+  }
+  const a=regionStart,b=Math.round(now());
+  regionStart=null;$('#coderegion').textContent='+ region';
+  postCode(Math.min(a,b),Math.max(a,b));
+};
+$('#codeinput').addEventListener('keydown',(e)=>{if(e.key==='Enter')$('#codepoint').click()});
 $('#play').onclick=()=>{const v=$('#v');if(v.paused){v.play();$('#play').textContent='⏸';}else{v.pause();$('#play').textContent='▶';}};
 boot();
 </script>`;

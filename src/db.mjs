@@ -31,6 +31,18 @@ export function openDb(dataDir) {
       createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL,
       PRIMARY KEY (slug, codeKey)
     );
+    -- A code applied to a point (tEnd NULL) or a region (tEnd >= tStart) of a
+    -- session's replay timeline. tStart/tEnd are ms on the session clock
+    -- (CONTRACTS.md §1), the same t every other timeline lane is drawn against.
+    CREATE TABLE IF NOT EXISTS code_applications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT NOT NULL, sessionId TEXT NOT NULL,
+      codeKey TEXT NOT NULL, code TEXT NOT NULL,
+      tStart INTEGER NOT NULL, tEnd INTEGER,
+      createdAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS code_applications_session
+      ON code_applications (sessionId, tStart, id);
   `);
   return {
     getCampaign: (slug) => {
@@ -46,6 +58,7 @@ export function openDb(dataDir) {
         .run(campaign.slug, JSON.stringify(campaign), now, now);
     },
     deleteCampaign: (slug) => {
+      db.prepare('DELETE FROM code_applications WHERE slug = ?').run(slug);
       db.prepare('DELETE FROM codebook WHERE slug = ?').run(slug);
       db.prepare('DELETE FROM campaigns WHERE slug = ?').run(slug);
     },
@@ -64,6 +77,14 @@ export function openDb(dataDir) {
       positive_example = ?, negative_example = ?, updatedAt = ? WHERE slug = ? AND codeKey = ?`)
       .run(fields.description ?? '', fields.positive_example ?? '',
         fields.negative_example ?? '', new Date().toISOString(), slug, codeKey),
+    // ---- code applications (src/code-applications.mjs owns the rules) -----
+    insertCodeApplication: (a) => Number(db.prepare(`INSERT INTO code_applications (slug, sessionId,
+      codeKey, code, tStart, tEnd, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(a.slug, a.sessionId, a.codeKey, a.code, a.tStart, a.tEnd ?? null,
+        new Date().toISOString()).lastInsertRowid),
+    getCodeApplication: (id) => db.prepare('SELECT * FROM code_applications WHERE id = ?').get(id) ?? null,
+    listCodeApplications: (sessionId) => db.prepare(
+      'SELECT * FROM code_applications WHERE sessionId = ? ORDER BY tStart, id').all(sessionId),
     insertSession: (s) => db.prepare(
       'INSERT INTO sessions (sessionId, slug, startedAt, playerCode, status) VALUES (?, ?, ?, ?, ?)')
       .run(s.sessionId, s.slug, s.startedAt, s.playerCode ?? null, 'live'),

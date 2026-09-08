@@ -7,6 +7,7 @@ import { createSession, appendEvents, writeChunk, mergeVideo, summarize,
   sessionDir, readLane, LANES } from './store.mjs';
 import { buildZip } from './zip.mjs';
 import { slugify } from './slugify.mjs';
+import { applyCodeAt, toTimelineEvent } from './code-applications.mjs';
 
 const SLUG = /^[a-z0-9][a-z0-9-]{2,39}$/;
 const SID = /^[a-f0-9]{16}$/;
@@ -143,6 +144,10 @@ export function createApi({ db, dataDir, adminPassword }) {
         if (req.method === 'GET' && seg[4] === 'sessions') {
           return json(res, 200, db.listSessions(slug)), true;
         }
+        // The campaign's codebook, for the code picker on the replay timeline.
+        if (req.method === 'GET' && seg[4] === 'codebook') {
+          return json(res, 200, db.listCodebook(slug)), true;
+        }
         if (req.method === 'GET' && seg[4] === 'package.zip') {
           const rows = db.listSessions(slug);
           const cols = ['sessionId', 'playerCode', 'startedAt', 'endedAt', 'durationMs',
@@ -175,13 +180,36 @@ export function createApi({ db, dataDir, adminPassword }) {
         if (!row) return json(res, 404, { error: 'not found' }), true;
         const dir = sessionDir(dataDir, row.slug, row.sessionId);
         if (req.method === 'GET' && seg[4] === 'timeline') {
-          const events = LANES.flatMap((lane) => readLane(dir, lane).map((e) => ({ lane, ...e })))
-            .sort((a, b) => (a.t ?? 0) - (b.t ?? 0));
+          // Recorded events and researcher-applied codes merge into one
+          // t-sorted list, so the codes lane needs no separate client path.
+          const events = [
+            ...LANES.flatMap((lane) => readLane(dir, lane).map((e) => ({ lane, ...e }))),
+            ...db.listCodeApplications(row.sessionId).map(toTimelineEvent),
+          ].sort((a, b) => (a.t ?? 0) - (b.t ?? 0));
           const hasVideo = fs.existsSync(path.join(dir, 'session.webm'));
           return json(res, 200, {
             session: row, events,
             video: hasVideo ? `/api/admin/sessions/${row.sessionId}/video` : null,
           }), true;
+        }
+        if (seg[4] === 'codes') {
+          if (req.method === 'GET') return json(res, 200, db.listCodeApplications(row.sessionId)), true;
+          if (req.method === 'POST') {
+            const b = await jsonBody(req);
+            if (!b) return json(res, 400, { error: 'body required' }), true;
+            try {
+              // The campaign comes from the session, never from the body, so a
+              // code can only ever land in its own campaign's codebook.
+              return json(res, 200, applyCodeAt(db, {
+                slug: row.slug, sessionId: row.sessionId,
+                code: b.code, tStart: b.tStart, tEnd: b.tEnd,
+              })), true;
+            } catch (err) {
+              if (err.code === 'INVALID_CODE' || err.code === 'INVALID_TIME')
+                return json(res, 400, { error: err.message }), true;
+              throw err;
+            }
+          }
         }
         if (req.method === 'GET' && seg[4] === 'video') {
           const p = path.join(dir, 'session.webm');
