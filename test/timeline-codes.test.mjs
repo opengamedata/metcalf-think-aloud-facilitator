@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import vm from 'node:vm';
 import { openDb } from '../src/db.mjs';
 import { applyCode } from '../src/codebook.mjs';
 import { createServer } from '../src/server.mjs';
@@ -184,7 +185,7 @@ test('the codes routes need admin auth and a real session', () => withApp(async 
 
 const bookPath = '/api/admin/campaigns/wake-test/codebook';
 const changeCode = (base, code, fields, method = 'PATCH') => fetch(
-  base + bookPath + '/' + encodeURIComponent(code),
+  base + bookPath + '?code=' + encodeURIComponent(code),
   { method, headers: admin, body: method === 'DELETE' ? undefined : JSON.stringify(fields) }
 ).then(async (r) => [r.status, await r.json()]);
 
@@ -260,8 +261,8 @@ test('codebook mutations validate labels and fields, reject collisions, and stay
     assert.equal((await changeCode(base, 'one', { code: 'renamed' }))[0], 200);
     assert.equal((await get(base, '/api/admin/campaigns/other-study/codebook'))[1][0].code, 'one');
     for (const method of ['PATCH', 'DELETE']) {
-      assert.equal((await fetch(base + bookPath + '/two', { method, body: '{}' })).status, 401);
-      assert.equal((await fetch(base + '/api/admin/campaigns/missing/codebook/two', { method, headers: admin, body: '{}' })).status, 404);
+      assert.equal((await fetch(base + bookPath + '?code=two', { method, body: '{}' })).status, 401);
+      assert.equal((await fetch(base + '/api/admin/campaigns/missing/codebook?code=two', { method, headers: admin, body: '{}' })).status, 404);
     }
   }));
 
@@ -276,4 +277,75 @@ test('campaign admin provides an inline codebook table with usage and save feedb
     assert.match(page, /0 · unused/);
     assert.match(page, /role="status"/);
     assert.match(page, /method:'PATCH'/);
+  }));
+
+test('freeform dot labels can be edited and renamed without URL path normalization', () =>
+  withApp(async ({ base }) => {
+    const sid = await seed(base);
+    await post(base, `/api/admin/sessions/${sid}/codes`, { code: '..', tStart: 0 });
+    assert.equal((await changeCode(base, '..', { code: '.', description: 'a dot' }))[0], 200);
+    assert.equal((await changeCode(base, '.', { positive_example: 'yes' }))[0], 200);
+    assert.equal((await get(base, bookPath))[1][0].positive_example, 'yes');
+  }));
+
+// Execute the shipped client script with a small DOM adapter and real HTTP.
+// This checks the row handlers, including a failed save retaining the draft,
+// without requiring a browser binary in the npm test environment.
+test('inline codebook controls save, reload, retain rejected drafts, and delete unused entries', () =>
+  withApp(async ({ base, dataDir }) => {
+    const sid = await seed(base);
+    await post(base, `/api/admin/sessions/${sid}/codes`, { code: 'used', tStart: 20 });
+    const db = openDb(dataDir);
+    applyCode(db, campaign.slug, 'unused');
+    db.raw.close();
+    class Element {
+      children = []; style = {}; value = ''; textContent = ''; disabled = false;
+      attributes = {};
+      append(...nodes) { for (const n of nodes) { n.parent = this; this.children.push(n); } }
+      replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
+      setAttribute(k, v) { this.attributes[k] = v; }
+      addEventListener() {}
+      remove() { this.parent.children = this.parent.children.filter(n => n !== this); }
+    }
+    const elements = new Map();
+    const document = {
+      querySelector: (s) => { if (!elements.has(s)) elements.set(s, new Element()); return elements.get(s); },
+      querySelectorAll: () => [], createElement: () => new Element(),
+    };
+    const context = vm.createContext({ document, location: { origin: base },
+      fetch: (url, options = {}) => fetch(base + url, { ...options, headers: { ...admin, ...options.headers } }) });
+    const page = await (await fetch(base + '/admin')).text();
+    vm.runInContext(page.match(/<script>([\s\S]*?)<\/script>/)[1], context);
+    await vm.runInContext("current='wake-test';loadCampaignCodebook(current)", context);
+    const rows = document.querySelector('#bookRows');
+    assert.equal(rows.children.length, 2);
+    let unused = rows.children[0], used = rows.children[1];
+    assert.equal(unused.children[4].textContent, '0 · unused');
+    assert.equal(used.children[4].textContent, '1');
+    assert.equal(used.children[5].children[1].disabled, true);
+    used.children[0].children[0].value = 'unused';
+    await used.children[5].children[0].onclick();
+    assert.match(used.children[5].children[2].textContent, /already exists/);
+    assert.equal(used.children[0].children[0].value, 'unused', 'failed save retains draft');
+    assert.equal(used.children[5].children[0].disabled, false);
+    used.children[0].children[0].value = 'renamed / code';
+    used.children[1].children[0].value = '<script>literal text</script>';
+    used.children[2].children[0].value = 'Positive';
+    used.children[3].children[0].value = 'Negative';
+    await used.children[5].children[0].onclick();
+    assert.equal(used.children[5].children[2].textContent, 'Saved.');
+    // A second save must address the renamed entry, not its old key.
+    used.children[2].children[0].value = 'Updated positive';
+    await used.children[5].children[0].onclick();
+    assert.equal(used.children[5].children[2].textContent, 'Saved.');
+    await context.loadCampaignCodebook('wake-test');
+    used = rows.children[0]; unused = rows.children[1];
+    assert.equal(used.children[0].children[0].value, 'renamed / code');
+    assert.equal(used.children[1].children[0].value, '<script>literal text</script>');
+    assert.equal(used.children[2].children[0].value, 'Updated positive');
+    assert.equal(used.children[3].children[0].value, 'Negative');
+    await unused.children[5].children[1].onclick();
+    assert.equal(rows.children.length, 1);
+    assert.equal((await get(base, bookPath))[1].length, 1);
+    assert.equal((await get(base, `/api/admin/sessions/${sid}/codes`))[1][0].code, 'renamed / code');
   }));

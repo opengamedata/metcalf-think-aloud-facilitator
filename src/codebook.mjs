@@ -51,3 +51,51 @@ export function applyCode(db, slug, rawCode) {
 export function applyCodes(db, slug, rawCodes) {
   return (rawCodes ?? []).map((c) => applyCode(db, slug, c));
 }
+
+const mutationError = (status, message) => Object.assign(new Error(message), { status });
+
+// Lock before checking uniqueness/usage, and commit the label and every stored
+// application together. No await inside this transaction.
+function mutateCode(db, slug, rawKey, fn) {
+  db.raw.exec('BEGIN IMMEDIATE');
+  try {
+    const key = codeKey(rawKey);
+    const entry = db.getCode(slug, key);
+    if (!entry) throw mutationError(404, 'Code not found.');
+    const result = fn(entry, key);
+    db.raw.exec('COMMIT');
+    return result;
+  } catch (err) {
+    db.raw.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+export function editCode(db, slug, rawKey, fields) {
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields))
+    throw mutationError(400, 'An object of codebook fields is required.');
+  for (const field of ['code', 'description', 'positive_example', 'negative_example']) {
+    if (Object.hasOwn(fields, field) && typeof fields[field] !== 'string')
+      throw mutationError(400, field + ' must be a string.');
+  }
+  return mutateCode(db, slug, rawKey, (entry, oldKey) => {
+    const code = normalizeCode(fields.code ?? entry.code);
+    if (code === null) throw mutationError(400, 'Code must not be blank or whitespace-only.');
+    const key = codeKey(code);
+    if (key !== oldKey && db.getCode(slug, key))
+      throw mutationError(409, 'That code already exists in this campaign.');
+    db.updateCode(slug, oldKey, { ...entry, ...fields });
+    db.renameCode(slug, oldKey, key, code);
+    return { ...db.getCode(slug, key), usageCount: db.codeUsage(slug, key) };
+  });
+}
+
+// Deliberately block deleting applied codes: timeline annotations must survive.
+export function deleteCode(db, slug, rawKey) {
+  return mutateCode(db, slug, rawKey, (_entry, key) => {
+    if (db.codeUsage(slug, key) > 0)
+      throw mutationError(409, 'This code is still applied and cannot be deleted.');
+    db.deleteCode(slug, key);
+    return { ok: true };
+  });
+}

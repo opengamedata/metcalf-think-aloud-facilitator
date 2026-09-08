@@ -33,6 +33,12 @@ const ADMIN_PAGE = `<!doctype html><meta charset="utf-8"><title>metcalf admin</t
   .row{display:flex;gap:1rem}.row>*{flex:1}
   #campList .item{display:flex;justify-content:space-between;align-items:center;padding:.5rem 0;border-bottom:1px solid var(--rule);cursor:pointer}
   #campList .item:hover{color:var(--accent)}
+  #codebook .table-scroll{overflow-x:auto}
+  #codebook table{min-width:800px}
+  #codebook td{vertical-align:top}
+  #codebook td:nth-child(-n+4){width:21%}
+  #codebook button{margin-bottom:.4rem}
+  button:disabled{opacity:.5;cursor:default}
 </style>
 <main>
   <h1>metcalf · think-aloud facilitator</h1>
@@ -55,6 +61,16 @@ const ADMIN_PAGE = `<!doctype html><meta charset="utf-8"><title>metcalf admin</t
       <label><input type="checkbox" id="f-promptCode" style="width:auto"> Ask participants for a player code</label>
       <p><button id="save">Save campaign</button>
          <span class="mono" id="campUrl"></span></p>
+    </div>
+    <div class="card" id="codebook" style="display:none">
+      <h2>Codebook — <span id="bookSlug"></span></h2>
+      <p>Codes appear here when used on a replay timeline. Edit a row and save it.
+        Renames update existing applications. Applied codes cannot be deleted.</p>
+      <p id="bookMsg" role="status"></p>
+      <div class="table-scroll"><table aria-label="Campaign codebook">
+        <thead><tr><th>Code</th><th>Description</th><th>Positive example</th><th>Negative example</th><th>Usage</th><th>Actions</th></tr></thead>
+        <tbody id="bookRows"></tbody>
+      </table></div>
     </div>
     <div class="card" id="sessions" style="display:none">
       <h2>Sessions — <span id="sessSlug"></span>
@@ -96,6 +112,7 @@ async function loadCampaigns(){
 }
 function fill(c){
   current=c.slug??null;
+  $('#codebook').style.display='none';
   $('#editor').style.display='block';
   for(const k of ['name','slug','gameUrl','instructionsMd','consentMd','thankyouMd'])$('#f-'+k).value=c[k]??'';
   $('#f-checklist').value=(c.checklist??[]).map(t=>t.id+' | '+t.label).join('\\n');
@@ -104,7 +121,7 @@ function fill(c){
 }
 $('#f-slug').addEventListener('input',previewSlug);
 $('#newCamp').onclick=()=>{fill({});$('#sessions').style.display='none';};
-async function edit(slug){fill(await api('campaigns/'+slug));loadSessions(slug);}
+async function edit(slug){fill(await api('campaigns/'+slug));loadSessions(slug);loadCampaignCodebook(slug);}
 $('#save').onclick=async()=>{
   const c={slug:previewSlug(),name:$('#f-name').value.trim(),gameUrl:$('#f-gameUrl').value.trim(),
     instructionsMd:$('#f-instructionsMd').value,consentMd:$('#f-consentMd').value,thankyouMd:$('#f-thankyouMd').value,
@@ -114,8 +131,83 @@ $('#save').onclick=async()=>{
   const out=await r.json();
   if(!r.ok){alert(out.error);return;}
   c.slug=out.slug??c.slug;               // server normalizes (lowercase etc.)
-  fill(c);loadCampaigns();loadSessions(c.slug);
+  fill(c);loadCampaigns();loadSessions(c.slug);loadCampaignCodebook(c.slug);
 };
+let bookRequest=0;
+async function loadCampaignCodebook(slug){
+  const request=++bookRequest;
+  $('#codebook').style.display='block';
+  $('#bookSlug').textContent=slug;
+  $('#bookRows').replaceChildren();
+  $('#bookMsg').textContent='Loading codebook…';
+  try{
+    const r=await fetch('/api/admin/campaigns/'+slug+'/codebook');
+    const entries=await r.json();
+    if(!r.ok)throw new Error(entries.error||'Could not load codebook.');
+    if(current!==slug||request!==bookRequest)return;
+    $('#bookMsg').textContent=entries.length?'':'No codes yet. Apply a code on a replay timeline to start this codebook.';
+    for(const entry of entries)appendCodeRow(slug,entry);
+  }catch(err){
+    if(current===slug&&request===bookRequest)$('#bookMsg').textContent=err.message;
+  }
+}
+function appendCodeRow(slug,entry){
+  const row=document.createElement('tr');
+  const inputs={};
+  const names={code:'Code',description:'Description',positive_example:'Positive example',negative_example:'Negative example'};
+  for(const [field,label] of Object.entries(names)){
+    const cell=document.createElement('td');
+    const input=document.createElement(field==='code'?'input':'textarea');
+    input.value=entry[field];
+    input.setAttribute('aria-label',label+' for '+entry.code);
+    inputs[field]=input;cell.append(input);row.append(cell);
+  }
+  const usage=document.createElement('td');
+  const actions=document.createElement('td');
+  const save=document.createElement('button');save.textContent='Save';
+  const remove=document.createElement('button');remove.textContent='Delete';remove.className='ghost';
+  const status=document.createElement('span');status.setAttribute('role','status');
+  actions.append(save,remove,status);row.append(usage,actions);
+  const showUsage=()=>{
+    usage.textContent=entry.usageCount===0?'0 · unused':String(entry.usageCount);
+    remove.disabled=entry.usageCount>0;
+    remove.title=remove.disabled?'Applied codes cannot be deleted.':'Delete unused code';
+  };
+  const busy=(value)=>{
+    save.disabled=value;remove.disabled=value||entry.usageCount>0;
+    for(const input of Object.values(inputs))input.disabled=value;
+  };
+  const url=()=>'/api/admin/campaigns/'+slug+'/codebook?code='+encodeURIComponent(entry.codeKey);
+  save.onclick=async()=>{
+    const fields={};
+    for(const [field,input] of Object.entries(inputs))if(input.value!==entry[field])fields[field]=input.value;
+    if(!Object.keys(fields).length){status.textContent='No changes.';return;}
+    busy(true);status.textContent='Saving…';
+    try{
+      const r=await fetch(url(),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify(fields)});
+      const out=await r.json();
+      if(!r.ok)throw new Error(out.error||'Could not save code.');
+      entry=out;
+      for(const [field,input] of Object.entries(inputs)){
+        input.value=entry[field];input.setAttribute('aria-label',names[field]+' for '+entry.code);
+      }
+      showUsage();status.textContent='Saved.';
+    }catch(err){status.textContent=err.message;}
+    finally{busy(false);}
+  };
+  remove.onclick=async()=>{
+    busy(true);status.textContent='Deleting…';
+    try{
+      const r=await fetch(url(),{method:'DELETE'});
+      const out=await r.json();
+      if(!r.ok)throw new Error(out.error||'Could not delete code.');
+      row.remove();
+      if(current===slug)$('#bookMsg').textContent='Deleted '+entry.code+'.';
+    }catch(err){status.textContent=err.message;}
+    finally{busy(false);}
+  };
+  showUsage();$('#bookRows').append(row);
+}
 async function loadSessions(slug){
   const rows=await api('campaigns/'+slug+'/sessions');
   $('#sessions').style.display='block';$('#sessSlug').textContent=slug;
