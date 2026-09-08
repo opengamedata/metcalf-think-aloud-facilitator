@@ -21,6 +21,16 @@ export function openDb(dataDir) {
       utterances INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0,
       ogdLogs INTEGER DEFAULT 0, status TEXT NOT NULL DEFAULT 'live'
     );
+    -- One codebook per campaign. codeKey is the lowercased, trimmed code and
+    -- carries the uniqueness rule; code keeps the casing of its first use.
+    CREATE TABLE IF NOT EXISTS codebook (
+      slug TEXT NOT NULL, codeKey TEXT NOT NULL, code TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      positive_example TEXT NOT NULL DEFAULT '',
+      negative_example TEXT NOT NULL DEFAULT '',
+      createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL,
+      PRIMARY KEY (slug, codeKey)
+    );
   `);
   return {
     getCampaign: (slug) => {
@@ -35,7 +45,25 @@ export function openDb(dataDir) {
         ON CONFLICT(slug) DO UPDATE SET json = excluded.json, updatedAt = excluded.updatedAt`)
         .run(campaign.slug, JSON.stringify(campaign), now, now);
     },
-    deleteCampaign: (slug) => db.prepare('DELETE FROM campaigns WHERE slug = ?').run(slug),
+    deleteCampaign: (slug) => {
+      db.prepare('DELETE FROM codebook WHERE slug = ?').run(slug);
+      db.prepare('DELETE FROM campaigns WHERE slug = ?').run(slug);
+    },
+    // ---- codebook (src/codebook.mjs owns the reuse-on-first-use rule) ------
+    listCodebook: (slug) => db.prepare('SELECT * FROM codebook WHERE slug = ? ORDER BY code COLLATE NOCASE').all(slug),
+    getCode: (slug, codeKey) => db.prepare('SELECT * FROM codebook WHERE slug = ? AND codeKey = ?').get(slug, codeKey) ?? null,
+    insertCode: (e) => {
+      const now = new Date().toISOString();
+      db.prepare(`INSERT INTO codebook (slug, codeKey, code, description, positive_example,
+        negative_example, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(slug, codeKey) DO NOTHING`)
+        .run(e.slug, e.codeKey, e.code, e.description ?? '', e.positive_example ?? '',
+          e.negative_example ?? '', now, now);
+    },
+    updateCode: (slug, codeKey, fields) => db.prepare(`UPDATE codebook SET description = ?,
+      positive_example = ?, negative_example = ?, updatedAt = ? WHERE slug = ? AND codeKey = ?`)
+      .run(fields.description ?? '', fields.positive_example ?? '',
+        fields.negative_example ?? '', new Date().toISOString(), slug, codeKey),
     insertSession: (s) => db.prepare(
       'INSERT INTO sessions (sessionId, slug, startedAt, playerCode, status) VALUES (?, ?, ?, ?, ?)')
       .run(s.sessionId, s.slug, s.startedAt, s.playerCode ?? null, 'live'),
