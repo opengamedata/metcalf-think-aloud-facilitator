@@ -86,6 +86,8 @@ export function openDb(dataDir) {
       tStart INTEGER NOT NULL, tEnd INTEGER,
       createdAt TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS code_applications_code
+      ON code_applications (slug, codeKey);
     CREATE INDEX IF NOT EXISTS code_applications_session
       ON code_applications (sessionId, tStart, id);
   `);
@@ -115,7 +117,9 @@ export function openDb(dataDir) {
       db.prepare('DELETE FROM campaigns WHERE slug = ?').run(slug);
     },
     // ---- codebook (src/codebook.mjs owns the reuse-on-first-use rule) ------
-    listCodebook: (slug) => db.prepare('SELECT * FROM codebook WHERE slug = ? ORDER BY code COLLATE NOCASE').all(slug),
+    listCodebook: (slug) => db.prepare(`SELECT c.*, (SELECT COUNT(*) FROM code_applications a
+      WHERE a.slug = c.slug AND a.codeKey = c.codeKey) AS usageCount
+      FROM codebook c WHERE c.slug = ? ORDER BY c.code COLLATE NOCASE`).all(slug),
     getCode: (slug, codeKey) => db.prepare('SELECT * FROM codebook WHERE slug = ? AND codeKey = ?').get(slug, codeKey) ?? null,
     insertCode: (e) => {
       const now = new Date().toISOString();
@@ -129,6 +133,15 @@ export function openDb(dataDir) {
       positive_example = ?, negative_example = ?, updatedAt = ? WHERE slug = ? AND codeKey = ?`)
       .run(fields.description ?? '', fields.positive_example ?? '',
         fields.negative_example ?? '', new Date().toISOString(), slug, codeKey),
+    renameCode: (slug, oldKey, key, code) => {
+      db.prepare('UPDATE codebook SET codeKey = ?, code = ? WHERE slug = ? AND codeKey = ?')
+        .run(key, code, slug, oldKey);
+      db.prepare('UPDATE code_applications SET codeKey = ?, code = ? WHERE slug = ? AND codeKey = ?')
+        .run(key, code, slug, oldKey);
+    },
+    codeUsage: (slug, key) => db.prepare(
+      'SELECT COUNT(*) AS n FROM code_applications WHERE slug = ? AND codeKey = ?').get(slug, key).n,
+    deleteCode: (slug, key) => db.prepare('DELETE FROM codebook WHERE slug = ? AND codeKey = ?').run(slug, key),
     // ---- code applications (src/code-applications.mjs owns the rules) -----
     insertCodeApplication: (a) => Number(db.prepare(`INSERT INTO code_applications (slug, sessionId,
       codeKey, code, tStart, tEnd, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)`)

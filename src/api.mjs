@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createSession, appendEvents, writeChunk, mergeVideo, summarize,
   sessionDir, readLane, LANES } from './store.mjs';
 import { buildZip } from './zip.mjs';
+import { editCode, deleteCode } from './codebook.mjs';
 import { slugify } from './slugify.mjs';
 import { applyCodeAt, toTimelineEvent } from './code-applications.mjs';
 
@@ -228,9 +229,25 @@ export function createApi({ db, dataDir, adminPassword,
           reap(slug);                       // lazy sweep on read
           return json(res, 200, db.listSessions(slug).map(view)), true;
         }
-        // The campaign's codebook, for the code picker on the replay timeline.
-        if (req.method === 'GET' && seg[4] === 'codebook') {
-          return json(res, 200, db.listCodebook(slug)), true;
+        // Shared by the campaign table and replay picker. A query parameter
+        // preserves every freeform label, including URL dot segments like "..".
+        if (seg[4] === 'codebook') {
+          if (!db.getCampaign(slug)) return json(res, 404, { error: 'Campaign not found.' }), true;
+          if (req.method === 'GET' && seg.length === 5)
+            return json(res, 200, db.listCodebook(slug)), true;
+          if (seg.length === 5 && ['PATCH', 'DELETE'].includes(req.method)) {
+            const key = u.searchParams.get('code');
+            if (key === null) return json(res, 400, { error: 'Code is required.' }), true;
+            const fields = req.method === 'PATCH' ? await jsonBody(req) : null;
+            try {
+              const result = req.method === 'PATCH'
+                ? editCode(db, slug, key, fields) : deleteCode(db, slug, key);
+              return json(res, 200, result), true;
+            } catch (err) {
+              if (!err.status) throw err;
+              return json(res, err.status, { error: err.message }), true;
+            }
+          }
         }
         if (req.method === 'GET' && seg[4] === 'package.zip') {
           reap(slug);

@@ -122,3 +122,22 @@ warning: ffmpeg not found — jsonl exported, frames skipped
    not installed in this worktree, and installing it would add a dependency step the card forbids.
    The generated client script is syntax-checked (`node --check` on the extracted `<script>` body)
    and the markup/CSS is asserted from the server-rendered string.
+
+## ekPz0OiJ — Editable codebook table per campaign (2026-09-08)
+
+Added an inline campaign codebook table for code, description, positive example,
+negative example, and application usage count. Rows save independently, show errors
+without discarding drafts, and distinguish `0 · unused` entries. Codes still originate
+through the existing replay apply/reuse flow.
+
+Authenticated PATCH/DELETE operations use the existing codebook model. Renames update
+both keys and labels on all campaign timeline applications in one transaction; duplicate
+labels are rejected. Deletion deliberately blocks applied codes (409) to preserve timeline
+annotations, while unused codes can be deleted. Query parameters preserve freeform labels,
+including slashes, Unicode, and dot segments.
+
+Committed failing acceptance tests first in `6840af3` (86 pass, 5 fail). Final validation:
+`npm test` — **93 tests, 93 pass, 0 fail, 0 skipped**. Coverage includes restart persistence,
+rename propagation/reuse, usage counts, deletion protection, validation/auth/campaign scope,
+and execution of the shipped table controls with a DOM adapter against real HTTP.
+`git diff --check` passed. No merge or deployment performed.
