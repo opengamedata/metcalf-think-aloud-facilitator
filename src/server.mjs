@@ -36,12 +36,6 @@ export function createServer({ dataDir = process.env.DATA_DIR ?? './data',
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ ok: true, service: 'metcalf-think-aloud-facilitator' }));
     }
-    if (u.pathname === '/') {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      return res.end('<!doctype html><meta charset="utf-8"><title>metcalf</title>' +
-        '<body style="font:16px system-ui;padding:3rem"><h1>metcalf-think-aloud-facilitator</h1>' +
-        '<p>Campaigns land here. <a href="/healthz">healthz</a></p>');
-    }
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'not found' }));
   });
