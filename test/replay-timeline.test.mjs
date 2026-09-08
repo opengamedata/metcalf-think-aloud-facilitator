@@ -22,13 +22,13 @@ test('each lane has its own track element and a playhead', () => {
 });
 
 test('lanes come from one config array, not a per-lane branch chain', () => {
-  assert.match(page, /const LANE_CONFIG=\[\{id:"clicks"/);
+  assert.match(page, /const LANE_CONFIG=\[\{id:"/);
   for (const lane of LANE_CONFIG) assert.ok(page.includes(`id:"${lane.id}"`), `${lane.id} is in the config literal`);
   // the strip builder itself never names a lane — it only walks the config.
   // ('clicks' is still branched on outside it, for the pre-existing video overlay.)
   const buildStrip = page.slice(page.indexOf('function buildStrip()'), page.indexOf('const now=()=>'));
   assert.ok(buildStrip.length > 100, 'found the buildStrip source');
-  for (const id of ['clicks', 'keys', 'wheel', 'dwell', 'ogd']) {
+  for (const id of LANE_CONFIG.map((l) => l.id)) {
     assert.ok(!buildStrip.includes(`'${id}'`) && !buildStrip.includes(`"${id}"`), `buildStrip does not name ${id}`);
   }
   // and no per-lane if-chain drives layout anywhere in the page or the module
@@ -68,7 +68,8 @@ test('laneFor maps events to lanes', () => {
   assert.equal(laneFor({ lane: 'ogd', t: 5 }), 'ogd');
   assert.equal(laneFor({ lane: 'ogd' }), null);
   assert.equal(laneFor({ lane: 'ogd', t: 'nope' }), null);
-  assert.equal(laneFor({ lane: 'transcript', t: 1, text: 'hi' }), null);
+  assert.equal(laneFor({ lane: 'transcript', t: 1, text: 'hi' }), 'speech');
+  assert.equal(laneFor({ lane: 'transcript', t: 1, text: 'hi', typed: true }), 'typed');
   assert.equal(laneFor({ lane: 'marks', t: 1, kind: 'video-start' }), null);
   assert.equal(laneFor(null), null);
 });
