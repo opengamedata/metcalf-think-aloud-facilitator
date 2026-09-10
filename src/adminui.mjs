@@ -2,7 +2,7 @@
 // /admin/replay/<sessionId> (video + time slider + synchronized lanes).
 // Single-file pages, cookie auth against the /api/admin routes.
 
-import { LANE_CONFIG, laneConfigSource } from './replay-lanes.mjs';
+import { LANE_CONFIG, laneConfigSource, replayHelpersSource, SHORTCUTS, SPEEDS } from './replay-lanes.mjs';
 
 const SID = /^[a-f0-9]{16}$/;
 
@@ -230,6 +230,17 @@ export const replayPage = (sessionId) => `<!doctype html><meta charset="utf-8"><
   #scrub{flex:1}
   #right{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;border-left:1px solid var(--rule);background:var(--panel)}
   .pane{overflow-y:auto;padding:0 12px 10px;flex:1}
+  /* transcript: the spoken narration, readable and seekable alongside the video */
+  #txpane{flex:1 1 58%;min-height:0;display:flex;flex-direction:column;border-bottom:1px solid var(--rule)}
+  #evpane{flex:1 1 42%;min-height:0;display:flex;flex-direction:column}
+  .u{margin:4px 0;padding:4px 7px;border-left:2px solid var(--rule);border-radius:0 3px 3px 0;color:var(--muted);cursor:pointer}
+  .u:hover{background:#16232a}
+  .u .t{font:10px ui-monospace,monospace;margin-right:6px;color:var(--muted)}
+  .u.past{color:var(--ink)}
+  .u.now{border-left-color:var(--accent);background:#16232a;color:var(--ink)}
+  .u.typed{border-left-style:dashed;font-style:italic}
+  .u.typed .tag{font:10px ui-monospace,monospace;color:var(--warm);margin-right:5px;text-transform:uppercase;letter-spacing:.06em}
+  #txempty{color:var(--muted);padding:6px 0}
   .ev{margin:3px 0;padding:2px 6px;border-left:2px solid transparent;color:var(--muted)}
   .ev .t{font:10px ui-monospace,monospace;margin-right:6px}
   .ev.past{color:var(--ink)}
@@ -248,6 +259,10 @@ export const replayPage = (sessionId) => `<!doctype html><meta charset="utf-8"><
   .m.tick{width:2px;margin-left:-1px}
   .m.bar{min-width:2px;border-radius:1px;opacity:.8}
   #ph{position:absolute;top:0;bottom:0;width:1px;background:var(--ink);opacity:.7;pointer-events:none}
+  #legend{display:flex;flex-wrap:wrap;gap:10px;padding:6px 2px 0;color:var(--muted);font-size:11px}
+  #legend kbd{font-family:ui-monospace,Menlo,monospace;background:var(--field);border:1px solid var(--rule);border-radius:3px;padding:0 4px;color:var(--ink)}
+  #bar button.ghost{padding:.35rem .6rem}
+  #speed{width:auto;padding:.25rem .4rem;font-size:12px}
   /* code applicator — lives in the strip, but is not a scrub target */
   #codebar{display:flex;gap:8px;align-items:center;padding:0 0 8px;cursor:auto}
   #codebar input{flex:0 1 20rem;padding:.3rem .5rem}
@@ -258,11 +273,18 @@ export const replayPage = (sessionId) => `<!doctype html><meta charset="utf-8"><
   <div id="left">
     <div id="stage"><video id="v"></video></div>
     <div id="bar"><button id="play">▶</button>
+      <button class="ghost" id="prevEv" title="previous event ([)">⏮</button>
+      <button class="ghost" id="nextEv" title="next event (])">⏭</button>
       <input id="scrub" type="range" min="0" max="1000" value="0">
-      <span class="mono" id="tnow">0:00</span> / <span class="mono" id="ttot">0:00</span></div>
+      <span class="mono" id="tnow">0:00</span> / <span class="mono" id="ttot">0:00</span>
+      <select id="speed" title="playback speed">${SPEEDS.map((s) => `<option value="${s}"${s === 1 ? ' selected' : ''}>${s}x</option>`).join('')}</select></div>
+    <div id="legend">${SHORTCUTS.map((s) => `<span><kbd>${s.keys}</kbd> ${s.label}</span>`).join('')}</div>
     <div class="mono" id="meta" style="color:var(--muted)"></div>
   </div>
-  <div id="right"><h2>Timeline</h2><div class="pane" id="lanes"></div></div>
+  <div id="right">
+    <div id="txpane"><h2>Transcript</h2><div class="pane" id="tx"></div></div>
+    <div id="evpane"><h2>Timeline</h2><div class="pane" id="lanes"></div></div>
+  </div>
 </div>
 <div id="strip">
 <div id="codebar">
@@ -285,26 +307,35 @@ const esc=(v)=>String(v).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;
 const LABEL_W=64;
 // one entry per lane — adding a lane is one entry, no per-type branching below
 const LANE_CONFIG=${laneConfigSource()};
+// pure helpers, shared verbatim with src/replay-lanes.mjs (unit-tested there)
+${replayHelpersSource()}
 const posPct=(t,dur)=>(!Number.isFinite(t)||!Number.isFinite(dur)||dur<=0)?0:Math.min(100,Math.max(0,t/dur*100));
 const laneFor=(e)=>{for(const l of LANE_CONFIG){if(!l.from(e))continue;
   return (l.needsTime&&!Number.isFinite(e.t))?null:l.id;}return null;};
-let data,offset=0,dur=1,W=1280,H=800,els=[];
+let data,offset=0,dur=1,W=1280,H=800,els=[],tx=[],txEls=[],evTimes=[],lastU=-2;
 
 async function boot(){
   const r=await fetch('/api/admin/sessions/'+SID+'/timeline');
   if(r.status===401){document.body.innerHTML='<p style="padding:2rem">Log in at <a href="/admin">/admin</a> first.</p>';return;}
   data=await r.json();
-  dur=Math.max(1,data.session.durationMs??1);
   const vs=data.events.find(e=>e.lane==='marks'&&e.kind==='video-start');
   offset=vs?vs.t:0;
+  // durationMs is null for abandoned sessions — derive something seekable
+  const recalcDur=()=>{
+    const mediaMs=Number.isFinite($('#v').duration)?$('#v').duration*1000:null;
+    dur=effectiveDurationMs({storedMs:data.session.durationMs,events:data.events,mediaMs,offsetMs:offset});
+    $('#ttot').textContent=clock(dur);
+  };
+  recalcDur();
+  $('#v').addEventListener('loadedmetadata',()=>{recalcDur();buildStrip();});
   $('#meta').textContent=SID+' · '+(data.session.playerCode??'no player code')+' · '+data.session.startedAt;
-  $('#ttot').textContent=clock(dur);
   if(data.video)$('#v').src=data.video;
   for(const e of data.events){
     if(e.lane!=='clicks')continue;                         // video click overlay
     const m=document.createElement('div');m.className='mark';
     m.style.left=(e.x/W*100)+'%';m.style.top=(e.y/H*100)+'%';m.dataset.t=e.t;$('#stage').appendChild(m);
   }
+  buildTranscript();
   buildList();
   buildStrip();
   loadCodebook();
@@ -330,6 +361,21 @@ function buildList(){
     lanes.appendChild(d);
   }
   els=[...document.querySelectorAll('.ev')];
+  // jump-to-event targets follow the list, so a freshly applied code is a stop
+  evTimes=[...new Set(data.events.filter(e=>Number.isFinite(e.t)&&laneFor(e)).map(e=>e.t))].sort((a,b)=>a-b);
+}
+// The transcript pane: readable narration, click to seek, typed entries marked.
+// It sits above the event list in the right column, so the codes applicator in
+// the strip below stays fully visible and reachable at the same time.
+function buildTranscript(){
+  tx=transcriptEntries(data.events);
+  $('#tx').innerHTML=tx.length
+    ?tx.map((e,i)=>'<div class="u'+(e.typed?' typed':'')+'" data-i="'+i+'" data-t="'+e.t+'">'
+      +'<span class="t">'+clock(e.t)+'</span>'+(e.typed?'<span class="tag">typed</span>':'')
+      +esc(e.typed?e.text:'“'+e.text+'”')+'</div>').join('')
+    :'<p id="txempty">no utterances recorded</p>';
+  txEls=[...$('#tx').querySelectorAll('.u')];
+  lastU=-2;
 }
 // runs of near-adjacent point events become one bar spanning first..last
 function burst(evs,gap){
@@ -376,6 +422,12 @@ function render(t){
     if(et<=t)focus=el;
   }
   if(focus&&!scrubbing)focus.scrollIntoView({block:'center',behavior:'instant'});
+  const ui=activeUtteranceIndex(tx,t);
+  if(ui!==lastU){
+    lastU=ui;
+    txEls.forEach((el,i)=>{el.classList.toggle('past',i<=ui);el.classList.toggle('now',i===ui);});
+    if(ui>=0&&txEls[ui]&&!scrubbing)txEls[ui].scrollIntoView({block:'center',behavior:'instant'});
+  }
   for(const m of document.querySelectorAll('.mark')){
     const mt=Number(m.dataset.t);
     m.classList.toggle('show',t>=mt&&t-mt<1600);
@@ -392,6 +444,24 @@ $('#strip').addEventListener('click',(ev)=>{
   const r=$('#lanebody').querySelector('.track').getBoundingClientRect();
   if(!r.width)return;
   seek(Math.min(1,Math.max(0,(ev.clientX-r.left)/r.width))*dur);
+});
+$('#play').onclick=()=>toggle();
+function toggle(){const v=$('#v');if(v.paused){v.play();$('#play').textContent='⏸';}else{v.pause();$('#play').textContent='▶';}}
+const step=(ms)=>seek(Math.min(dur,Math.max(0,now()+ms)));
+const jump=(dir)=>{const t=nextEventTime(evTimes,now(),dir);if(t!=null)seek(t);};
+$('#prevEv').onclick=()=>jump(-1);
+$('#nextEv').onclick=()=>jump(1);
+$('#speed').addEventListener('change',()=>{$('#v').playbackRate=Number($('#speed').value)||1;});
+function bumpSpeed(dir){
+  const i=SPEEDS.indexOf(Number($('#speed').value));
+  const n=Math.min(SPEEDS.length-1,Math.max(0,(i<0?SPEEDS.indexOf(1):i)+dir));
+  $('#speed').value=String(SPEEDS[n]);$('#v').playbackRate=SPEEDS[n];
+}
+// click an utterance to seek the video to that moment — this is also how an
+// analyst positions the playhead before applying a code at that timestamp
+$('#tx').addEventListener('click',(ev)=>{
+  const el=ev.target.closest('.u');
+  if(el)seek(Number(el.dataset.t));
 });
 // --- applying codes -------------------------------------------------------
 // The picker is a plain input backed by a datalist of the campaign's codebook:
@@ -430,7 +500,17 @@ $('#coderegion').onclick=()=>{
   postCode(Math.min(a,b),Math.max(a,b));
 };
 $('#codeinput').addEventListener('keydown',(e)=>{if(e.key==='Enter')$('#codepoint').click()});
-$('#play').onclick=()=>{const v=$('#v');if(v.paused){v.play();$('#play').textContent='⏸';}else{v.pause();$('#play').textContent='▶';}};
+// analyst shortcuts — never while focus is in a text field (the code picker
+// above is one, so space/[ ] type normally while a code is being entered)
+document.addEventListener('keydown',(ev)=>{
+  if(ev.metaKey||ev.ctrlKey||ev.altKey||isTextEntry(ev.target))return;
+  const k=ev.key;
+  const act={' ':()=>toggle(),ArrowLeft:()=>step(-5000),ArrowRight:()=>step(5000),
+    j:()=>step(-10000),l:()=>step(10000),'[':()=>jump(-1),']':()=>jump(1),
+    '-':()=>bumpSpeed(-1),'_':()=>bumpSpeed(-1),'=':()=>bumpSpeed(1),'+':()=>bumpSpeed(1)}[k.length===1?k.toLowerCase():k];
+  if(!act)return;
+  ev.preventDefault();act();
+});
 boot();
 </script>`;
 
