@@ -81,3 +81,71 @@ admin routes.
 Tests: `npm test` → 56 pass / 0 fail (39 baseline + 9 in
 `test/code-applications.test.mjs` + 8 in `test/timeline-codes.test.mjs`).
 No existing assertion was weakened or removed.
+
+---
+
+## ybcxJgOz — Ability to delete a prior recording [tests]
+
+Branch: `card-ybcxJgOz-ability-to-delete-a-prior-recording` (based on 3daf592).
+
+Tests-only phase. No production code touched. `.dispatch/plan.md` records the
+implementation plan (db `deleteSession`, `DELETE /api/admin/sessions/:id`,
+per-row delete affordance + confirm dialog in the admin sessions table and the
+replay page).
+
+"A recording" = a session: a SQLite row (`src/db.mjs`) + its on-disk media
+(`src/store.mjs` `sessionDir` — jsonl lanes + `session.webm`). List view is the
+admin per-campaign sessions table (`src/adminui.mjs` `loadSessions`); playback
+view is `replayPage`. No `deleteSession` and no `DELETE /api/admin/sessions/:id`
+existed — verified the current `DELETE` returns 404 and leaves the recording in
+place.
+
+New file `test/session-delete.test.mjs` — 7 tests. All 7 FAIL on the baseline
+(the DELETE route and the UI affordance/dialog do not exist yet):
+1. `DELETE /api/admin/sessions/:id requires admin auth` — 401 unauth, recording
+   untouched, AND an authenticated delete succeeds + 404s after (proves the gate
+   is a real route, not a missing one). FAILS: authed delete currently 404.
+2. `deleting a recording removes the row and its stored media, and it is gone
+   after a refresh` — delete → row gone from the campaign list, fresh GET 404,
+   on-disk session dir + `session.webm` removed, `db.getSession` null. FAILS:
+   route missing.
+3. `deleting is idempotent-safe and reports success on the first call` — first
+   delete 200, second delete 404 (no corruption). FAILS: route missing.
+4. `deleting the last remaining recording leaves an empty list` — list → `[]`
+   (empty state). FAILS: route missing.
+5. `a recording you cannot address is rejected and nothing changes` — owner
+   delete succeeds (route exists); a foreign/unknown id → 404, real recording +
+   its media untouched, list length unchanged. FAILS: owner delete currently 404.
+6. `the sessions list ships a delete affordance and a confirm dialog` — `/admin`
+   page has a per-row accessible `Delete recording` control + the "Delete this
+   recording? … can't be undone." confirm dialog. FAILS: UI not built.
+7. `the replay page exposes a delete control for the recording being played` —
+   `replayPage` ships the same delete control + confirm dialog. FAILS: UI not built.
+
+Baseline on this branch before the new file: **104 pass / 0 fail**.
+After adding the file: full suite **111 tests, 104
+pass / 7 fail** (all 7 failures are the new tests; zero existing assertions
+weakened or removed).
+
+## ybcxJgOz implementation (2026-09-11)
+- `src/db.mjs`: added `db.deleteSession(id)` — deletes the session's
+  `code_applications` rows then the `sessions` row (mirrors `deleteCampaign`).
+- `src/api.mjs`: added `DELETE /api/admin/sessions/:id` inside the existing
+  admin-gated block (401 unauthenticated via the shared `isAdmin` gate).
+  404 for unknown id with no data change; otherwise `fs.rmSync` the session
+  dir (lanes + session.webm), then `db.deleteSession`, returns
+  `{ ok: true, sessionId }`. Second delete is 404 (row already gone).
+  Read/create/force-end/flags/timeline/video routes untouched.
+- `src/adminui.mjs`:
+  - sessions table: per-row `🗑` button with `aria-label="Delete recording"`
+    in the action cell next to the replay link; rows carry `data-sid`.
+    New `#delDialog` (role=dialog, "Delete this recording? This can't be
+    undone." + Cancel / destructive Delete). On confirm: DELETE, on success
+    remove row optimistically, re-render "no sessions yet" empty state when
+    none remain, toast "Recording deleted"; on failure keep row + error.
+  - replay page: `#delRec` delete control (same aria-label) in the codebar
+    right edge + identical `#delDialog`. On confirm: pause + clear the video
+    (stopPlayback) first, then DELETE; on success navigate to /admin, on
+    failure show the error.
+- Full suite: **111 tests, 111 pass / 0 fail** (was 104/7; all 7 committed
+  failing tests now green, no existing test touched).
