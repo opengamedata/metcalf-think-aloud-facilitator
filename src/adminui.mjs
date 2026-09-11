@@ -78,6 +78,13 @@ const ADMIN_PAGE = `<!doctype html><meta charset="utf-8"><title>metcalf admin</t
       <table><thead><tr><th>player code</th><th>started</th><th>duration</th>
         <th>utterances</th><th>clicks</th><th>OGD logs</th><th>status</th><th></th></tr></thead>
         <tbody id="sessRows"></tbody></table>
+      <div id="delDialog" role="dialog" aria-modal="true" aria-label="Delete recording" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:22rem;max-width:90vw;background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:1rem 1.2rem;z-index:10">
+        <p>Delete this recording? This can't be undone. <span class="mono" id="delTarget"></span></p>
+        <p style="display:flex;justify-content:flex-end;gap:.6rem;margin:0">
+          <button class="ghost" id="delCancel">Cancel</button>
+          <button id="delConfirm" style="background:var(--err);color:#1a0d09">Delete</button>
+        </p>
+      </div>
     </div>
   </div>
 </main>
@@ -208,11 +215,33 @@ function appendCodeRow(slug,entry){
   };
   showUsage();$('#bookRows').append(row);
 }
+let deleteTarget=null;
+async function confirmDelete(sessionId,playerCode){
+  deleteTarget={sessionId,playerCode};
+  const d=$('#delDialog');d.style.display='block';$('#delTarget').textContent=playerCode??'no player code';$('#delConfirm').focus();
+}
+function closeDelete(){deleteTarget=null;$('#delDialog').style.display='none';}
+$('#delCancel').onclick=closeDelete;
+$('#delDialog').addEventListener('click',(e)=>{if(e.target.id==='delDialog')closeDelete()});
+$('#delConfirm').onclick=async()=>{
+  const t=deleteTarget;if(!t)return;
+  const r=await fetch('/api/admin/sessions/'+t.sessionId,{method:'DELETE'});
+  const out=await r.json().catch(()=>({}));
+  if(!r.ok){deleteTarget=null;$('#delDialog').style.display='none';alert(out.error||'Could not delete recording.');return;}
+  closeDelete();
+  document.querySelectorAll('#sessRows tr[data-sid="'+t.sessionId+'"]').forEach(el=>el.remove());
+  if(!$('#sessRows').querySelector('tr[data-sid]'))
+    $('#sessRows').innerHTML='<tr><td colspan="8" style="color:var(--muted)">no sessions yet</td></tr>';
+  alert('Recording deleted');
+};
 async function loadSessions(slug){
   const rows=await api('campaigns/'+slug+'/sessions');
   $('#sessions').style.display='block';$('#sessSlug').textContent=slug;
   $('#dl').href='/api/admin/campaigns/'+slug+'/package.zip';
-  $('#sessRows').innerHTML=rows.map(r=>'<tr><td>'+(r.playerCode??'—')+'</td><td>'+r.startedAt.replace('T',' ').slice(0,16)+'</td><td>'+clock(r.durationMs)+'</td><td>'+r.utterances+'</td><td>'+r.clicks+'</td><td>'+r.ogdLogs+'</td><td>'+r.status+'</td><td><a href="/admin/replay/'+r.sessionId+'">replay</a></td></tr>').join('')||'<tr><td colspan="8" style="color:var(--muted)">no sessions yet</td></tr>';
+  $('#sessRows').innerHTML=rows.map(r=>'<tr data-sid="'+r.sessionId+'"><td>'+(r.playerCode??'—')+'</td><td>'+r.startedAt.replace('T',' ').slice(0,16)+'</td><td>'+clock(r.durationMs)+'</td><td>'+r.utterances+'</td><td>'+r.clicks+'</td><td>'+r.ogdLogs+'</td><td>'+r.status+'</td><td><a href="/admin/replay/'+r.sessionId+'">replay</a> <button aria-label="Delete recording" data-sid="'+r.sessionId+'" data-pc="'+String(r.playerCode??'').replace(/"/g,'&quot;')+'" title="Delete recording">🗑</button></td></tr>').join('')||'<tr><td colspan="8" style="color:var(--muted)">no sessions yet</td></tr>';
+  $('#sessRows').querySelectorAll('button[aria-label="Delete recording"]').forEach((b,i)=>{
+    b.onclick=()=>confirmDelete(b.dataset.sid,b.dataset.pc||null);
+  });
 }
 boot();
 </script>`;
@@ -287,18 +316,28 @@ export const replayPage = (sessionId) => `<!doctype html><meta charset="utf-8"><
   </div>
 </div>
 <div id="strip">
-<div id="codebar">
-  <input id="codeinput" list="codelist" autocomplete="off"
-         placeholder="code — pick one from this campaign, or type a new one">
-  <datalist id="codelist"></datalist>
-  <button class="ghost" id="codepoint">+ point</button>
-  <button class="ghost" id="coderegion">+ region</button>
-  <span class="mono" id="codemsg"></span>
-</div>
+    <div id="codebar">
+      <input id="codeinput" list="codelist" autocomplete="off"
+             placeholder="code — pick one from this campaign, or type a new one">
+      <datalist id="codelist"></datalist>
+      <button class="ghost" id="codepoint">+ point</button>
+      <button class="ghost" id="coderegion">+ region</button>
+      <span class="mono" id="codemsg"></span>
+      <button aria-label="Delete recording" id="delRec" title="Delete recording"
+        style="background:var(--err);color:#1a0d09;margin-left:auto">🗑 Delete recording</button>
+    </div>
 <div id="lanebody">
   ${LANE_CONFIG.map((l) => `<div class="lane" data-lane="${l.id}"><span class="lanelabel">${l.label}</span><div class="track" id="track-${l.id}" style="color:${l.color}"></div></div>`).join('\n  ')}
   <div id="ph" style="left:64px"></div>
-</div></div>
+</div>
+</div>
+<div id="delDialog" role="dialog" aria-modal="true" aria-label="Delete recording" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:22rem;max-width:90vw;background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:1rem 1.2rem;z-index:10">
+  <p>Delete this recording? This can't be undone. <span class="mono" id="delTarget"></span></p>
+  <p style="display:flex;justify-content:flex-end;gap:.6rem;margin:0">
+    <button class="ghost" id="delCancel">Cancel</button>
+    <button id="delConfirm" style="background:var(--err);color:#1a0d09">Delete</button>
+  </p>
+</div>
 <script>
 const $=(s)=>document.querySelector(s);
 const SID=${JSON.stringify(sessionId)};
@@ -511,6 +550,21 @@ document.addEventListener('keydown',(ev)=>{
   if(!act)return;
   ev.preventDefault();act();
 });
+// --- deleting the recording being played -----------------------------------
+// Stop + reset playback first (no orphaned playhead or in-flight chunks), then
+// ask; deletion is irreversible.
+let deleting=false;
+const stopPlayback=()=>{const v=$('#v');try{v.pause()}catch{}v.removeAttribute('src');$('#play').textContent='▶';};
+$('#delRec').onclick=()=>{
+  if(deleting)return;
+  if(!confirm('Delete this recording? This can\'t be undone.'))return;
+  deleting=true;
+  stopPlayback();
+  fetch('/api/admin/sessions/'+SID,{method:'DELETE'})
+    .then(async(r)=>{const out=await r.json().catch(()=>({}));if(!r.ok)throw new Error(out.error||'Could not delete recording.');location.href='/admin';})
+    .catch((e)=>{alert(e.message);});
+  // on success the page is gone; on failure the alert explains why
+};
 boot();
 </script>`;
 

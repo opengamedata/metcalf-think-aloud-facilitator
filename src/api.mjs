@@ -285,6 +285,15 @@ export function createApi({ db, dataDir, adminPassword,
       }
       if (seg[2] === 'sessions' && SID.test(seg[3] ?? '')) {
         const row = db.getSession(seg[3]);
+        // Irreversible: removes the row and its on-disk media (lanes + video).
+        // Unknown ids are indistinguishable from ids you do not own, so both
+        // are 404 with no data change; the caller confirmed via dialog first.
+        if (req.method === 'DELETE' && !seg[4]) {
+          if (!row) return json(res, 404, { error: 'not found' }), true;
+          fs.rmSync(sessionDir(dataDir, row.slug, row.sessionId), { recursive: true, force: true });
+          db.deleteSession(row.sessionId);
+          return json(res, 200, { ok: true, sessionId: row.sessionId }), true;
+        }
         if (!row) return json(res, 404, { error: 'not found' }), true;
         const dir = sessionDir(dataDir, row.slug, row.sessionId);
 

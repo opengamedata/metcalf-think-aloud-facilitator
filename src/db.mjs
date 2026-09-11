@@ -157,6 +157,14 @@ export function openDb(dataDir) {
       .run(s.sessionId, s.slug, s.startedAt, s.playerCode ?? null, 'live', s.startedAt),
     getSession: (id) => db.prepare('SELECT * FROM sessions WHERE sessionId = ?').get(id) ?? null,
 
+    // Full deletion: the session row plus its researcher-applied codes.
+    // The on-disk media (jsonl lanes + session.webm) is the caller's job —
+    // see DELETE /api/admin/sessions/:id in src/api.mjs.
+    deleteSession: (id) => {
+      db.prepare('DELETE FROM code_applications WHERE sessionId = ?').run(id);
+      return db.prepare('DELETE FROM sessions WHERE sessionId = ?').run(id).changes;
+    },
+
     // The single write that closes a session. `status` is 'ended' (participant
     // clicked the button) or 'abandoned' (reaped or force-closed). Guarded on
     // status='live' so a second call is a no-op rather than a recount.
